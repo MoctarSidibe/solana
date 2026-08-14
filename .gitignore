@@ -1,0 +1,61 @@
+# ============================================
+# SunPark — .gitignore
+# Protect secrets & local-only files
+# ============================================
+
+# --- Environment & secrets (NEVER commit) ---
+.env
+.env.*
+!.env.example
+*.key
+*.pem
+*secret*
+*wallet*
+*private*
+
+# --- Python cache ---
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.egg-info/
+
+# --- Cloudflared binary (too large for Git) ---
+cloudflared.exe
+cloudflared
+cloudflared-windows-amd64.exe
+cloudflared-linux-amd64
+
+# --- Log files ---
+*.log
+logs/
+*.log.*
+
+# --- Temporary files ---
+*.tmp
+*.temp
+*.swp
+*.swo
+*.bak
+*.old
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.code-workspace
+
+# --- Virtual environments ---
+venv/
+.venv/
+env/
+ENV/
+
+# --- OS / editor files ---
+.Trash-*
+core.*
+
+# --- Deployment artifacts ---
+*.pid
+*.sock
+*.sqlite
+*.db
