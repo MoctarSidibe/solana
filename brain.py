@@ -32,7 +32,14 @@ def analyze_with_deepseek(prompt, text, max_length=6000):
     
     try:
         resp = requests.post(DEEPSEEK_URL, headers=headers, json=payload, timeout=20)
-        content = resp.json()["choices"][0]["message"]["content"]
+        if resp.status_code != 200:
+            print(f"❌ DeepSeek HTTP {resp.status_code}: {resp.text[:300]}")
+            return None
+        data = resp.json()
+        if "choices" not in data or not data["choices"]:
+            print(f"❌ DeepSeek Error: unexpected response: {str(data)[:300]}")
+            return None
+        content = data["choices"][0]["message"]["content"]
         return json.loads(content)
     except Exception as e:
         print(f"❌ DeepSeek Error: {e}")
@@ -71,30 +78,37 @@ def judge_whale_trade(tx_data):
 
 def judge_liquidity_event(pool_data):
     """Judge if a new LP pool is worth entering."""
-    prompt = """You are a Solana liquidity analyst.
-    Look at this new LP pool. Return ONLY JSON:
+    prompt = """You are a Solana liquidity analyst reading live on-chain flow stats for a new LP pool.
+    Look at the initial liquidity and subsequent buy pressure. Return ONLY JSON:
     {
-        "buy": true/false,
+        "signal": "BUY"/"SELL"/"IGNORE",
         "token_mint": "address_or_null",
         "confidence": 0.0,
         "reason": "short explanation"
     }
-    Consider: Is the initial liquidity healthy? Is the token legitimate?"""
-    
+    Consider:
+    - Is the initial liquidity healthy (SOL floor)?
+    - Is buy flow following the pool open or is it fading?
+    - Distribution: unique buyers vs a single whale?
+    - Red flags: no mint, tiny size, immediate sell pressure."""
     return analyze_with_deepseek(prompt, json.dumps(pool_data))
 
 
 def judge_volume_spike(token_data):
     """Judge if a volume spike is a breakout or fake pump."""
-    prompt = """You are a Solana momentum trader.
-    Look at this volume spike data. Return ONLY JSON:
+    prompt = """You are a Solana momentum trader reading live on-chain flow stats for one token.
+    Analyze the rolling volume, buy/sell pressure, and trader distribution. Return ONLY JSON:
     {
-        "buy": true/false,
+        "signal": "BUY"/"SELL"/"IGNORE",
+        "token_mint": "address_or_null",
         "confidence": 0.0,
         "reason": "short explanation"
     }
-    Consider: Is this organic volume or wash trading?"""
-    
+    Consider:
+    - Is volume organic (many unique buyers) or one wallet washing?
+    - Buy/sell SOL ratio: is pressure positive or fading?
+    - Age and initial liquidity: too fresh/no depth or healthy?
+    - Red flags: few buyers, high sell pressure, no metadata."""
     return analyze_with_deepseek(prompt, json.dumps(token_data))
 
 

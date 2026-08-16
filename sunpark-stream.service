@@ -1,0 +1,23 @@
+[Unit]
+Description=SunPark Solana Pump.fun and Raydium stream
+After=network-online.target sunpark.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=sunpark
+Group=sunpark
+WorkingDirectory=/var/www/sunpark
+EnvironmentFile=/var/www/sunpark/.env
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/var/www/sunpark/.venv/bin/python /var/www/sunpark/stream.py
+Restart=always
+RestartSec=5
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=full
+ReadWritePaths=/var/www/sunpark/data
+
+[Install]
+WantedBy=multi-user.target

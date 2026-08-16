@@ -1,0 +1,447 @@
+import json
+import time
+
+from filters import compact_stats, selection_gate
+from stats import rollup
+from storage import get_db, load_picks
+
+_STATUS_CACHE = {"heavy": (0.0, {}), "recent": (0.0, [])}
+_STATUS_CACHE_TTL = 60
+_RECENT_CACHE_TTL = 20
+
+
+def _cached(name, fn):
+    ts, value = _STATUS_CACHE[name]
+    if time.time() - ts > _STATUS_CACHE_TTL:
+        value = fn()
+        _STATUS_CACHE[name] = (time.time(), value)
+    return value
+
+
+def _cached_recent(fn):
+    ts, value = _STATUS_CACHE["recent"]
+    if time.time() - ts > _RECENT_CACHE_TTL:
+        value = fn()
+        _STATUS_CACHE["recent"] = (time.time(), value)
+    return value
+
+
+def _heavy_stats(connection):
+    """Expensive aggregates over the big tables; refreshed once per minute."""
+    return {
+        "pending": connection.execute(
+            "SELECT COUNT(*) FROM candidates WHERE processed_at IS NULL"
+        ).fetchone()[0],
+        "candidates_24h": connection.execute(
+            "SELECT COUNT(*) FROM candidates WHERE datetime(received_at) >= datetime('now', '-1 day')"
+        ).fetchone()[0],
+        "ai_errors": connection.execute(
+            "SELECT COUNT(*) FROM track_decisions WHERE track = 'ai' AND status = 'error'"
+        ).fetchone()[0],
+        "ai_latency": connection.execute(
+            "SELECT AVG(latency_ms) FROM track_decisions WHERE track = 'ai' AND status = 'ok'"
+        ).fetchone()[0] or 0,
+        "rejection": rejection_counts(connection),
+        "funnel": {
+            row[0]: row[1]
+            for row in connection.execute(
+                "SELECT category, COUNT(*) FROM ("
+                "  SELECT json_extract(analysis_json, '$.event_category') AS category "
+                "  FROM candidates WHERE analysis_json IS NOT NULL "
+                "  AND datetime(received_at) >= datetime('now', '-3 hours')"
+                ") WHERE category IS NOT NULL GROUP BY category"
+            )
+        },
+    }
+
+
+DASHBOARD_HTML = """<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SunPark Monitor</title>
+<style>
+body{margin:0;background:#10151b;color:#e7edf3;font:15px system-ui,sans-serif}
+main{max-width:1200px;margin:0 auto;padding:24px}
+.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:12px;margin:22px 0}
+.card{background:#18212a;border:1px solid #2a3945;border-radius:10px;padding:16px}
+.value{font-size:25px;font-weight:700;margin-top:8px}.ok{color:#53d69a}.warn{color:#f4c95d}.bad{color:#ff7e7e}
+table{width:100%;border-collapse:collapse;background:#18212a;border-radius:10px;overflow:hidden}
+th,td{text-align:left;padding:10px;border-bottom:1px solid #2a3945;font-size:13px} th{color:#91a0ad}
+code{color:#a9d6ff} .signal-BUY{color:#53d69a}.signal-SELL{color:#ff9f7e}.signal-IGNORE{color:#91a0ad}
+@media(max-width:650px){main{padding:14px}th,td{padding:8px 5px;font-size:11px}.hide-mobile{display:none}}
+</style>
+</head>
+<body><main>
+<h1>SunPark Monitor</h1><div class="muted"><a href="/sunpark/logs">Activity logs</a> | Rules vs DeepSeek paper-trading pipeline. Refreshes every 10 seconds.</div>
+ <section class="grid" id="cards"></section>
+ <h2>Live Picks (Top-5)</h2>
+ <div class="muted">Mechanical rank of gate-clean mints; DeepSeek is a last-pass sanity check.</div>
+ <table><thead><tr><th>#</th><th>Token</th><th>Score</th><th>Why</th><th>AI verdict</th><th>AI reason</th></tr></thead>
+ <tbody id="picks"><tr><td colspan="6">Loading...</td></tr></tbody></table>
+ <h2>Live Flow</h2>
+ <div class="muted">Top mints by 5-minute SOL volume, rolled from the stream in-memory.</div>
+ <table><thead><tr><th>Token</th><th>5m VOL (SOL)</th><th>Buy:Sell</th><th>Net (SOL)</th><th>Buyers</th><th>Sellers</th><th>Age</th><th>Init Liq</th></tr></thead>
+  <tbody id="flow"><tr><td colspan="8">Loading...</td></tr></tbody></table>
+  <h2>RPC Enrichment Health</h2>
+  <div class="muted">Background RPC caches (holders, mint/freeze safety, metadata, price coverage). Green = that cache is live; amber = partially working; red = RPC-limited (e.g. free tier exhausted) and self-healing once a working RPC is available.</div>
+  <section class="grid" id="enrich"></section>
+   <h2>Paper Account (dry-run)</h2>
+  <div class="muted">Virtual PnL from the mechanical exit engine. Never touches a real wallet.</div>
+  <table><thead><tr><th>Balance (SOL)</th><th>Open positions</th><th>Closed</th><th>Wins</th><th>Realized PnL (SOL)</th><th>Position</th><th>State</th><th>Entry</th><th>Now</th><th>Peak</th></tr></thead>
+  <tbody id="paper"><tr><td colspan="10">Loading...</td></tr></tbody></table>
+  <h2>Edge (forward outcomes)</h2>
+  <div class="muted">Forward +5m/+30m returns labeled at maturity from live prices; win rate = % of resolved with +30m return. No hindsight, no guessing.</div>
+  <section class="grid" id="edgeCards"></section>
+  <h3>By entry mode</h3>
+  <table><thead><tr><th>Mode</th><th>Samples</th><th>Resolved</th><th>Win %</th><th>Avg +30m</th><th>Median +30m</th></tr></thead><tbody id="edge-mode"><tr><td colspan="6">Loading...</td></tr></tbody></table>
+  <h3>By AI signal</h3>
+  <table><thead><tr><th>AI signal</th><th>Samples</th><th>Resolved</th><th>Win %</th><th>Avg +30m</th><th>Median +30m</th></tr></thead><tbody id="edge-ai"><tr><td colspan="6">Loading...</td></tr></tbody></table>
+  <h3>By rank</h3>
+  <table><thead><tr><th>Rank</th><th>Samples</th><th>Resolved</th><th>Win %</th><th>Avg +30m</th><th>Median +30m</th></tr></thead><tbody id="edge-rank"><tr><td colspan="6">Loading...</td></tr></tbody></table>
+  <h3>By exit reason</h3>
+  <table><thead><tr><th>Exit</th><th>Samples</th><th>Resolved</th><th>Win %</th><th>Avg +30m</th><th>Median +30m</th></tr></thead><tbody id="edge-exit"><tr><td colspan="6">Loading...</td></tr></tbody></table>
+  <h2>Why Tokens Get Rejected (24h)</h2>
+ <table><thead><tr><th>Reason</th><th>Count</th></tr></thead>
+ <tbody id="reject"><tr><td colspan="2">Loading...</td></tr></tbody></table>
+ <h2>Recent Candidates</h2>
+ <table><thead><tr><th>Time</th><th>Token</th><th>Category</th><th>Flags</th><th>Signature</th><th>Rules</th><th>AI</th><th>Latency</th></tr></thead>
+ <tbody id="recent"><tr><td colspan="8">Loading...</td></tr></tbody></table>
+</main>
+<script>
+const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+function card(label,value,kind=''){return `<div class="card"><div class="muted">${esc(label)}</div><div class="value ${kind}">${esc(value)}</div></div>`}
+async function refresh(){
+ const r=await fetch('/sunpark/api/status'); if(!r.ok) throw Error(r.status); const d=await r.json();
+ const stream=d.ingress.stream||{}; const services=d.services||{};
+ document.querySelector('#cards').innerHTML=[
+  card('Webhook',services.webhook?'ONLINE':'CHECK',services.webhook?'ok':'warn'),
+  card('Stream',services.stream?'ONLINE':'STALE',services.stream?'ok':'bad'),
+  card('Notifications',stream.notifications||0), card('Candidates',d.candidates_24h),
+  card('Pending queue',d.pending), card('RPC failures',stream.rpc_failures||0,stream.rpc_failures?'warn':'ok'),
+  card('AI avg latency',`${Math.round(d.ai_avg_latency_ms||0)} ms`), card('AI errors',d.ai_errors, d.ai_errors?'warn':'ok')].join('');
+  document.querySelector('#recent').innerHTML=d.recent.map(x=>`<tr><td>${esc(x.received_at)}</td><td><strong>${esc(x.symbol||x.name||'Unknown')}</strong><br><code>${esc((x.primary_mint||'').slice(0,10))}...</code></td><td>${esc(x.category)}</td><td>${esc(x.flags||'')}</td><td><code>${esc(x.signature.slice(0,12))}...</code></td><td class="signal-${esc(x.rules_signal)}">${esc(x.rules_signal)}</td><td class="signal-${esc(x.ai_signal)}">${esc(x.ai_signal)}</td><td>${esc(x.ai_latency_ms??'-')} ms</td></tr>`).join('')||'<tr><td colspan="8">No candidates yet</td></tr>';
+  document.querySelector('#reject').innerHTML=(d.rejection?Object.entries(d.rejection).slice(0,12).map(([k,v])=>`<tr><td>${esc(k)}</td><td>${esc(v)}</td></tr>`).join(''):'')||'<tr><td colspan="2">No rejections yet</td></tr>';
+  const f=await fetch('/sunpark/api/top_mints');const flow=await f.json();
+  document.querySelector('#flow').innerHTML=flow.map(x=>`<tr><td><strong>${esc(x.symbol||x.name||'Unknown')}</strong><br><code>${esc((x.mint||'').slice(0,10))}...</code></td><td>${esc(x.vol_5m_sol??0)}</td><td>${esc(x.buy_ratio_5m??'-')}</td><td>${esc(x.net_5m_sol??0)}</td><td>${esc(x.unique_buyers_5m??0)}</td><td>${esc(x.unique_sellers_5m??0)}</td><td>${esc(x.age_minutes??0)}m</td><td>${esc(x.initial_liquidity_sol??'-')}</td></tr>`).join('')||'<tr><td colspan="8">No flow yet</td></tr>';
+  const g=await fetch('/sunpark/api/enrichment');const en=await g.json();
+  document.querySelector('#enrich').innerHTML=Object.entries(en||{}).map(([k,v])=>card(k,`${v.ok}/${v.total}`,v.status==='ok'?'ok':(v.status==='degraded'?'warn':'bad'))).join('')||card('RPC enrichment','unavailable','bad');
+  document.querySelector('#picks').innerHTML=(d.picks||[]).map(x=>`<tr><td>${esc(x.rank)}</td><td><strong>${esc(x.symbol||x.name||'Unknown')}</strong><br><code>${esc((x.mint||'').slice(0,10))}...</code></td><td>${esc(x.score)}</td><td>${esc((x.reasons||[]).join(', '))}</td><td class="signal-${esc(x.ai_signal||'IGNORE')}">${esc(x.ai_signal||'…')}${x.ai_confidence?' ('+esc(x.ai_confidence)+')':''}</td><td>${esc(x.ai_reason||'')}</td></tr>`).join('')||'<tr><td colspan="6">No picks yet</td></tr>';
+  const p=await fetch('/sunpark/api/paper');const paper=await p.json();
+  document.querySelector('#paper').innerHTML=(paper.open_positions!==undefined?`<tr><td><strong>${esc(paper.balance_sol)}</strong></td><td>${esc(paper.open_positions)}</td><td>${esc(paper.closed_count)}</td><td>${esc(paper.win_count)}</td><td class="${paper.realized_pnl_sol>0?'ok':(paper.realized_pnl_sol<0?'bad':'')}">${esc(paper.realized_pnl_sol)}</td><td colspan="5"></td></tr>`+(paper.positions||[]).map(x=>`<tr><td colspan="5"></td><td><code>${esc((x.mint||'').slice(0,10))}...</code></td><td>${esc(x.state)}</td><td>${esc(x.entry_price_sol)}</td><td>${esc(x.current_price_sol??'-')}</td><td>${esc(x.peak_price_sol)}</td></tr>`).join(''):'<tr><td colspan="10">No paper trades yet</td></tr>');
+  const e=await fetch('/sunpark/api/edge');const edge=await e.json();
+  const s=edge.summary||{};
+  document.querySelector('#edgeCards').innerHTML=[
+   card('Outcome samples',s.samples||0), card('Resolved',s.resolved||0),
+   card('Win rate (30m)',s.win_rate_pct==null?'-':s.win_rate_pct+'%',s.win_rate_pct>50?'ok':(s.win_rate_pct==null?'':'warn')),
+   card('Avg +30m',s.avg_return_30m_pct==null?'-':s.avg_return_30m_pct+'%',(s.avg_return_30m_pct||0)>0?'ok':'warn'),
+   card('Median +30m',s.median_return_30m_pct==null?'-':s.median_return_30m_pct+'%'), card('No data',s.nodata||0)].join('');
+  function groupRows(obj){return Object.entries(obj||{}).map(([k,v])=>`<tr><td>${esc(k)}</td><td>${esc(v.samples??0)}</td><td>${esc(v.resolved??0)}</td><td>${v.win_rate_pct==null?'-':esc(v.win_rate_pct+'%')}</td><td>${v.avg_return_30m_pct==null?'-':esc(v.avg_return_30m_pct+'%')}</td><td>${v.median_return_30m_pct==null?'-':esc(v.median_return_30m_pct+'%')}</td></tr>`).join('')}
+  ['mode','ai','rank','exit'].forEach(k=>document.querySelector('#edge-'+k).innerHTML=groupRows(edge['by_'+k])||'<tr><td colspan="6">No outcomes yet</td></tr>');
+}
+refresh().catch(e=>document.querySelector('#cards').innerHTML=card('Dashboard error',e.message,'bad')); setInterval(()=>refresh().catch(()=>{}),10000);
+</script></body></html>"""
+
+
+LOGS_HTML = """<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SunPark Activity Logs</title>
+<style>
+body{margin:0;background:#10151b;color:#e7edf3;font:15px system-ui,sans-serif}main{max-width:1200px;margin:0 auto;padding:24px}
+a{color:#a9d6ff}.muted{color:#91a0ad}table{width:100%;border-collapse:collapse;background:#18212a;margin-top:18px}
+th,td{text-align:left;padding:10px;border-bottom:1px solid #2a3945;font-size:13px}th{color:#91a0ad}
+.info{color:#b9c8d4}.warn{color:#f4c95d}.error{color:#ff7e7e}code{color:#a9d6ff}
+@media(max-width:650px){main{padding:14px}th,td{padding:8px 5px;font-size:11px}}
+</style></head><body><main>
+<h1>Activity Logs</h1><div class="muted"><a href="/sunpark/">Back to monitor</a> | Refreshes every 10 seconds. Structured application events only.</div>
+<table><thead><tr><th>Time</th><th>Level</th><th>Source</th><th>Message</th><th>Details</th></tr></thead>
+<tbody id="logs"><tr><td colspan="5">Loading...</td></tr></tbody></table>
+<script>
+const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+async function refresh(){const r=await fetch('/sunpark/api/logs?limit=150');if(!r.ok)throw Error(r.status);const rows=await r.json();document.querySelector('#logs').innerHTML=rows.map(x=>`<tr><td>${esc(x.created_at)}</td><td class="${esc(x.level)}">${esc(x.level)}</td><td>${esc(x.source)}</td><td>${esc(x.message)}</td><td><code>${esc(x.meta||'')}</code></td></tr>`).join('')||'<tr><td colspan="5">No activity yet</td></tr>'}
+refresh().catch(e=>document.querySelector('#logs').innerHTML=`<tr><td colspan="5">${esc(e.message)}</td></tr>`);setInterval(()=>refresh().catch(()=>{}),10000);
+</script></main></body></html>"""
+
+
+def status_payload():
+    connection = get_db()
+    try:
+        stream = connection.execute(
+            "SELECT stats_json, updated_at FROM ingress_stats WHERE source = 'stream'"
+        ).fetchone()
+        ingress = {}
+        if stream:
+            ingress["stream"] = json.loads(stream[0])
+            ingress["stream"]["updated_at"] = stream[1]
+
+        heavy = _cached("heavy", lambda: _heavy_stats(connection))
+        pending = heavy["pending"]
+        candidates_24h = heavy["candidates_24h"]
+        ai_errors = heavy["ai_errors"]
+        ai_latency = heavy["ai_latency"]
+        rejection = heavy["rejection"]
+        funnel = heavy["funnel"]
+        recent_rows = _cached_recent(
+            lambda: connection.execute(
+                "SELECT signature, event_type, received_at, payload_json, analysis_json "
+                "FROM candidates ORDER BY received_at DESC LIMIT 20"
+            ).fetchall()
+        )
+        recent = []
+        for signature, event_type, received_at, payload_json, analysis_json in recent_rows:
+            payload = json.loads(payload_json)
+            card = json.loads(analysis_json) if analysis_json else {}
+            category = card.get("event_category", payload.get("event_category", event_type or "other"))
+            decisions = {
+                row[0]: row[1:]
+                for row in connection.execute(
+                    "SELECT track, signal, latency_ms FROM track_decisions WHERE signature = ?",
+                    (signature,),
+                )
+            }
+            rules = decisions.get("rules", ("-", None))
+            ai = decisions.get("ai", ("-", None))
+            gate_reasons = []
+            try:
+                allowed, gate_reasons = selection_gate(payload, card)
+                if allowed:
+                    gate_reasons = []
+            except Exception:
+                gate_reasons = []
+            recent.append(
+                {
+                    "signature": signature,
+                    "category": category,
+                    "name": card.get("name"),
+                    "symbol": card.get("symbol"),
+                    "primary_mint": card.get("primary_mint"),
+                    "received_at": received_at,
+                    "rules_signal": rules[0],
+                    "ai_signal": ai[0],
+                    "ai_latency_ms": round(ai[1], 1) if ai[1] is not None else None,
+                    "flags": ",".join(gate_reasons) if gate_reasons else None,
+                }
+            )
+        return {
+            "services": {
+                "webhook": True,
+                "stream": bool(stream),
+            },
+            "ingress": ingress,
+            "pending": pending,
+            "candidates_24h": candidates_24h,
+            "ai_errors": ai_errors,
+            "ai_avg_latency_ms": round(ai_latency, 1),
+            "recent": recent,
+            "rejection": rejection,
+            "funnel": funnel,
+            "picks": picks_payload(),
+        }
+    finally:
+        connection.close()
+
+
+def enrichment_payload():
+    """Background RPC cache health: holders, safety, metadata, price coverage."""
+    connection = get_db()
+    try:
+        def status_counts(table):
+            total = connection.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
+            ok_rows = connection.execute(
+                f"SELECT COUNT(*) FROM {table} WHERE status = 'ok'"
+            ).fetchone()[0]
+            status = "ok" if ok_rows else ("degraded" if total else "idle")
+            return {"total": total, "ok": ok_rows, "status": status}
+
+        holders = status_counts("token_holders")
+        safety = status_counts("token_safety")
+        metadata = status_counts("token_meta")
+        rows = connection.execute("SELECT stats_json FROM mint_stats").fetchall()
+        with_price = sum(
+            1
+            for (payload,) in rows
+            if (json.loads(payload).get("price_sol") or 0) > 0
+        )
+        prices = {
+            "total": len(rows),
+            "ok": with_price,
+            "status": "ok" if with_price else ("idle" if not rows else "degraded"),
+        }
+        return {"holders": holders, "safety": safety, "metadata": metadata, "prices": prices}
+    finally:
+        connection.close()
+
+
+def top_mints_payload(limit=12):
+    try:
+        limit = max(1, min(int(limit), 30))
+    except (TypeError, ValueError):
+        limit = 12
+    rows = rollup.top_mints(300, limit=limit)
+    names = {}
+    mints = [row["mint"] for row in rows]
+    if mints:
+        connection = get_db()
+        try:
+            names = {
+                row[0]: (row[1], row[2])
+                for row in connection.execute(
+                    "SELECT mint, name, symbol FROM token_meta WHERE mint IN (%s)"
+                    % ",".join("?" * len(mints)),
+                    mints,
+                )
+            }
+        finally:
+            connection.close()
+    result = []
+    for row in rows:
+        name, symbol = names.get(row["mint"], (None, None))
+        result.append(
+            {
+                "mint": row["mint"],
+                "name": name,
+                "symbol": symbol,
+                "vol_5m_sol": row.get("vol_sol"),
+                "buy_ratio_5m": (
+                    round(row.get("buy_sol", 0) / row.get("sell_sol", 0), 2)
+                    if row.get("sell_sol") and row.get("sell_sol") > 0
+                    else None
+                ),
+                "net_5m_sol": row.get("net_sol"),
+                "unique_buyers_5m": row.get("unique_buyers"),
+                "unique_sellers_5m": row.get("unique_sellers"),
+                "age_minutes": (
+                    round((row.get("age_seconds") or 0) / 60, 1)
+                    if row.get("age_seconds") is not None
+                    else None
+                ),
+                "initial_liquidity_sol": row.get("initial_liquidity_sol"),
+            }
+        )
+    return result
+
+
+def rejection_counts(connection, hours=24):
+    """Selection-gate rejection reasons over the last window, counted."""
+    counts = {}
+    rows = connection.execute(
+        "SELECT reason FROM track_decisions "
+        "WHERE track = 'ai' AND status = 'filtered' "
+        "AND datetime(created_at) >= datetime('now', ?)",
+        (f"-{int(hours)} hours",),
+    ).fetchall()
+    for (reason,) in rows:
+        for item in str(reason).split(","):
+            item = item.strip()
+            if item:
+                counts[item] = counts.get(item, 0) + 1
+    return dict(sorted(counts.items(), key=lambda pair: -pair[1]))
+
+
+def picks_payload():
+    picks = load_picks(10)
+    if not picks:
+        return []
+    names = {}
+    mints = [pick["mint"] for pick in picks]
+    connection = get_db()
+    try:
+        names = {
+            row[0]: (row[1], row[2])
+            for row in connection.execute(
+                "SELECT mint, name, symbol FROM token_meta WHERE mint IN (%s)"
+                % ",".join("?" * len(mints)),
+                mints,
+            )
+        }
+    finally:
+        connection.close()
+    result = []
+    for pick in picks:
+        name, symbol = names.get(pick["mint"], (None, None))
+        result.append(
+            {
+                "mint": pick["mint"],
+                "name": name,
+                "symbol": symbol,
+                "score": pick["score"],
+                "rank": pick["rank"],
+                "reasons": pick["reasons"],
+                "ai_signal": pick["ai_signal"],
+                "ai_confidence": pick["ai_confidence"],
+                "ai_reason": pick["ai_reason"],
+                "ai_latency_ms": pick["ai_latency_ms"],
+                "updated_at": pick["updated_at"],
+            }
+        )
+    return result
+
+
+def paper_payload():
+    try:
+        from exits import paper
+
+        summary = paper.summary()
+        positions = []
+        for mint, position in paper.positions.items():
+            snapshot = rollup.stats_for(mint) or {}
+            positions.append(
+                {
+                    "mint": mint,
+                    "state": position.state,
+                    "entry_price_sol": position.entry_price_sol,
+                    "current_price_sol": snapshot.get("price_sol"),
+                    "size_sol": round(position.size_sol, 4),
+                    "peak_price_sol": position.peak_price_sol,
+                }
+            )
+        summary["positions"] = positions
+        return summary
+    except Exception:
+        return {}
+
+
+def edge_payload():
+    try:
+        from outcomes import outcomes_summary
+
+        return outcomes_summary()
+    except Exception:
+        return {}
+
+
+def logs_payload(limit=150, level=None, source=None):
+    try:
+        limit = max(1, min(int(limit), 300))
+    except (TypeError, ValueError):
+        limit = 150
+    query = "SELECT created_at, level, source, message, meta_json FROM activity_logs"
+    clauses = []
+    values = []
+    if level:
+        clauses.append("level = ?")
+        values.append(level[:20])
+    if source:
+        clauses.append("source = ?")
+        values.append(source[:40])
+    if clauses:
+        query += " WHERE " + " AND ".join(clauses)
+    query += " ORDER BY id DESC LIMIT ?"
+    values.append(limit)
+
+    connection = get_db()
+    try:
+        rows = connection.execute(query, values).fetchall()
+        return [
+            {
+                "created_at": row[0],
+                "level": row[1],
+                "source": row[2],
+                "message": row[3],
+                "meta": row[4] or "",
+            }
+            for row in rows
+        ]
+    finally:
+        connection.close()
