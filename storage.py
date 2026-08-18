@@ -191,6 +191,8 @@ def initialize_schema(connection):
             ON activity_logs(created_at DESC);
         CREATE INDEX IF NOT EXISTS idx_candidates_received
             ON candidates(received_at);
+        CREATE INDEX IF NOT EXISTS idx_track_decisions_sig
+            ON track_decisions(signature);
         """
     )
     columns = {

@@ -105,41 +105,54 @@ code{color:#a9d6ff} .signal-BUY{color:#53d69a}.signal-SELL{color:#ff9f7e}.signal
 <script>
 const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 function card(label,value,kind=''){return `<div class="card"><div class="muted">${esc(label)}</div><div class="value ${kind}">${esc(value)}</div></div>`}
-async function refresh(){
- const r=await fetch('/sunpark/api/status'); if(!r.ok) throw Error(r.status); const d=await r.json();
- const stream=d.ingress.stream||{}; const services=d.services||{};
- document.querySelector('#cards').innerHTML=[
+function toFetch(url,timeout=8000){const c=new AbortController();const t=setTimeout(()=>c.abort(),timeout);return fetch(url,{signal:c.signal}).finally(()=>clearTimeout(t))}
+async function loadStatus(){
+ try{
+  const r=await toFetch('/sunpark/api/status');if(!r.ok)throw Error(r.status);const d=await r.json();
+  const stream=d.ingress.stream||{};const services=d.services||{};
+  document.querySelector('#cards').innerHTML=[
    card('Webhook',services.webhook?'ONLINE':'CHECK',services.webhook?'ok':'warn'),
    card('Stream',services.stream?'ONLINE':'STALE',services.stream?'ok':'bad'),
-   card('Pending queue',d.pending), card('RPC failures',stream.rpc_failures||0,stream.rpc_failures?'warn':'ok')].join('');
-   document.querySelector('#reject').innerHTML=(d.rejection?Object.entries(d.rejection).slice(0,12).map(([k,v])=>`<tr><td>${esc(k)}</td><td>${esc(v)}</td></tr>`).join(''):'')||'<tr><td colspan="2">No rejections yet</td></tr>';
-  const g=await fetch('/sunpark/api/enrichment');const en=await g.json();
-  document.querySelector('#enrich').innerHTML=Object.entries(en||{}).map(([k,v])=>card(k,`${v.ok}/${v.total}`,v.status==='ok'?'ok':(v.status==='degraded'?'warn':'bad'))).join('')||card('RPC enrichment','unavailable','bad');
+   card('Pending queue',d.pending),card('RPC failures',stream.rpc_failures||0,stream.rpc_failures?'warn':'ok')].join('');
+  document.querySelector('#reject').innerHTML=(d.rejection?Object.entries(d.rejection).slice(0,12).map(([k,v])=>`<tr><td>${esc(k)}</td><td>${esc(v)}</td></tr>`).join(''):'')||'<tr><td colspan="2">No rejections yet</td></tr>';
   document.querySelector('#picks').innerHTML=(d.picks||[]).map(x=>`<tr><td>${esc(x.rank)}</td><td><strong>${esc(x.symbol||x.name||'Unknown')}</strong><br><code>${esc((x.mint||'').slice(0,10))}...</code></td><td>${esc(x.score)}</td><td>${esc((x.reasons||[]).join(', '))}</td><td class="signal-${esc(x.ai_signal||'IGNORE')}">${esc(x.ai_signal||'…')}${x.ai_confidence?' ('+esc(x.ai_confidence)+')':''}</td><td>${esc(x.ai_reason||'')}</td></tr>`).join('')||'<tr><td colspan="6">No picks yet</td></tr>';
-    const p=await fetch('/sunpark/api/paper');const paper=await p.json();
-    let solUsd=0;
-    try{const sp=await fetch('https://api.coingecko.com/api/v3/simple/price?ids=solana&vs_currencies=usd');const sj=await sp.json();solUsd=sj.solana?.usd||0;}catch(e){}
-    const $=v=>solUsd?(v*solUsd).toFixed(0):'';
-    document.querySelector('#paperCards').innerHTML=paper.open_positions!==undefined?[
-     card('Honest Balance',paper.honest_balance_sol+' SOL'+(solUsd?' ($'+$(paper.honest_balance_sol)+')':''),(paper.honest_balance_sol>10?'ok':'warn')),
-     card('Honest PnL',paper.honest_pnl_sol+' SOL'+(solUsd?' ($'+$(paper.honest_pnl_sol)+')':''),(paper.honest_pnl_sol>0?'ok':'bad')),
-     card('Win rate',paper.honest_closed_count?Math.round(paper.honest_win_count/paper.honest_closed_count*100)+'%':'-',paper.honest_win_count>paper.honest_closed_count/2?'ok':'warn'),
-     card('Open',paper.open_positions||0,paper.open_positions>5?'warn':''),
-     card('Closed',paper.honest_closed_count||paper.closed_count||0),
-     card('Wins',paper.honest_win_count||paper.win_count||0,(paper.honest_win_count||0)>0?'ok':'')
-    ].join(''):'';
-    document.querySelector('#paper').innerHTML=(paper.positions&&paper.positions.length?(paper.positions||[]).map(x=>`<tr><td><code>${esc((x.mint||'').slice(0,10))}...</code></td><td>${esc(x.state)}</td><td>${esc(x.entry_price_sol)}</td><td>${esc(x.peak_price_sol)}</td></tr>`).join(''):'<tr><td colspan="4">No open positions</td></tr>'):'<tr><td colspan="4">No paper trades yet</td></tr>');
-  const e=await fetch('/sunpark/api/edge');const edge=await e.json();
+ }catch(e){document.querySelector('#cards').innerHTML=card('Status error',e.message,'bad')}
+}
+async function loadEnrich(){
+ try{const g=await toFetch('/sunpark/api/enrichment');const en=await g.json();
+  document.querySelector('#enrich').innerHTML=Object.entries(en||{}).map(([k,v])=>card(k,`${v.ok}/${v.total}`,v.status==='ok'?'ok':(v.status==='degraded'?'warn':'bad'))).join('')||card('RPC enrichment','unavailable','bad');
+ }catch(e){document.querySelector('#enrich').innerHTML=card('Enrich error',e.message,'bad')}
+}
+async function loadPaper(){
+ try{const p=await toFetch('/sunpark/api/paper');const paper=await p.json();
+  let solUsd=0;
+  try{const sp=await toFetch('https://api.coingecko.com/api/v3/simple/price?ids=solana&vs_currencies=usd',5000);const sj=await sp.json();solUsd=sj.solana?.usd||0;}catch(e){}
+  const $=v=>solUsd?(v*solUsd).toFixed(0):'';
+  document.querySelector('#paperCards').innerHTML=paper.open_positions!==undefined?[
+   card('Honest Balance',paper.honest_balance_sol+' SOL'+(solUsd?' ($'+$(paper.honest_balance_sol)+')':''),(paper.honest_balance_sol>10?'ok':'warn')),
+   card('Honest PnL',paper.honest_pnl_sol+' SOL'+(solUsd?' ($'+$(paper.honest_pnl_sol)+')':''),(paper.honest_pnl_sol>0?'ok':'bad')),
+   card('Win rate',paper.honest_closed_count?Math.round(paper.honest_win_count/paper.honest_closed_count*100)+'%':'-',paper.honest_win_count>paper.honest_closed_count/2?'ok':'warn'),
+   card('Open',paper.open_positions||0,paper.open_positions>5?'warn':''),
+   card('Closed',paper.honest_closed_count||paper.closed_count||0),
+   card('Wins',paper.honest_win_count||paper.win_count||0,(paper.honest_win_count||0)>0?'ok':'')
+  ].join(''):'';
+  document.querySelector('#paper').innerHTML=(paper.positions&&paper.positions.length?(paper.positions||[]).map(x=>`<tr><td><code>${esc((x.mint||'').slice(0,10))}...</code></td><td>${esc(x.state)}</td><td>${esc(x.entry_price_sol)}</td><td>${esc(x.peak_price_sol)}</td></tr>`).join(''):'<tr><td colspan="4">No open positions</td></tr>'):'<tr><td colspan="4">No paper trades yet</td></tr>';
+ }catch(e){document.querySelector('#paperCards').innerHTML=card('Paper error',e.message,'bad')}
+}
+async function loadEdge(){
+ try{const e=await toFetch('/sunpark/api/edge');const edge=await e.json();
   const s=edge.summary||{};
   document.querySelector('#edgeCards').innerHTML=[
-   card('Outcome samples',s.samples||0), card('Resolved',s.resolved||0),
+   card('Outcome samples',s.samples||0),card('Resolved',s.resolved||0),
    card('Win rate (30m)',s.win_rate_pct==null?'-':s.win_rate_pct+'%',s.win_rate_pct>50?'ok':(s.win_rate_pct==null?'':'warn')),
    card('Avg +30m',s.avg_return_30m_pct==null?'-':s.avg_return_30m_pct+'%',(s.avg_return_30m_pct||0)>0?'ok':'warn'),
    card('Median +30m',s.median_return_30m_pct==null?'-':s.median_return_30m_pct+'%')].join('');
   function groupRows(obj){return Object.entries(obj||{}).map(([k,v])=>`<tr><td>${esc(k)}</td><td>${esc(v.samples??0)}</td><td>${esc(v.resolved??0)}</td><td>${v.win_rate_pct==null?'-':esc(v.win_rate_pct+'%')}</td><td>${v.avg_return_30m_pct==null?'-':esc(v.avg_return_30m_pct+'%')}</td><td>${v.median_return_30m_pct==null?'-':esc(v.median_return_30m_pct+'%')}</td></tr>`).join('')}
   ['mode','exit'].forEach(k=>document.querySelector('#edge-'+k).innerHTML=groupRows(edge['by_'+k])||'<tr><td colspan="6">No outcomes yet</td></tr>');
+ }catch(e){document.querySelector('#edgeCards').innerHTML=card('Edge error',e.message,'bad')}
 }
-refresh().catch(e=>document.querySelector('#cards').innerHTML=card('Dashboard error',e.message,'bad')); setInterval(()=>refresh().catch(()=>{}),10000);
+async function refresh(){await Promise.allSettled([loadStatus(),loadEnrich(),loadPaper(),loadEdge()])}
+refresh();setInterval(refresh,10000);
 </script></body></html>"""
 
 
@@ -215,13 +228,6 @@ def status_payload():
             }
             rules = decisions.get("rules", ("-", None))
             ai = decisions.get("ai", ("-", None))
-            gate_reasons = []
-            try:
-                allowed, gate_reasons = selection_gate(payload, card)
-                if allowed:
-                    gate_reasons = []
-            except Exception:
-                gate_reasons = []
             recent.append(
                 {
                     "signature": signature,
@@ -233,7 +239,6 @@ def status_payload():
                     "rules_signal": rules[0],
                     "ai_signal": ai[0],
                     "ai_latency_ms": round(ai[1], 1) if ai[1] is not None else None,
-                    "flags": ",".join(gate_reasons) if gate_reasons else None,
                 }
             )
         return {
