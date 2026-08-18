@@ -43,6 +43,8 @@ holders_jobs = queue.Queue(maxsize=2000)
 holders_seen = set()
 holders_seen_lock = threading.Lock()
 
+picks_event = threading.Event()
+
 
 def swap_direction(event):
     source = (event.get("source") or "").upper()
@@ -141,6 +143,7 @@ def apply_event_to_rollup(event, card):
 
 def stats_loop():
     snapshot_seconds = int(os.getenv("SUNPARK_STATS_SNAPSHOT_SECONDS", "60"))
+    prune_counter = 0
     while True:
         time.sleep(snapshot_seconds)
         try:
@@ -153,6 +156,14 @@ def stats_loop():
                 "warn", "worker", "stats snapshot failed",
                 {"error": str(error)[:300]},
             )
+        prune_counter += 1
+        if prune_counter >= 30:
+            prune_counter = 0
+            try:
+                from storage import prune_old_candidates
+                prune_old_candidates()
+            except Exception:
+                pass
 
 
 def update_registry(event, card):
@@ -175,14 +186,15 @@ def update_registry(event, card):
             }
         )
     elif category == "liquidity":
+        is_migration = event.get("event_type") == "PUMP_MIGRATE"
         record = {
             "mint": mint,
             "creator": (existing or {}).get("creator") or event.get("fee_payer"),
             "created_at": (existing or {}).get("created_at") or timestamp,
             "source": (existing or {}).get("source") or source,
             "decimals": card.get("decimals"),
-            "graduated_at": timestamp,
-            "status": "migrated",
+            "graduated_at": (existing or {}).get("graduated_at") or (timestamp if is_migration else None),
+            "status": "migrated" if is_migration else (existing or {}).get("status", "created"),
         }
         save_token_registry(record)
 
@@ -238,7 +250,7 @@ def try_paper_entry(mint, reason):
             {"mint": mint[:12]},
         )
         return False
-    opened = paper.open_position(mint, price, entry_reason=reason)
+    opened = paper.open_position(mint, price, entry_reason=reason, entry_source=source or "rollup")
     if opened:
         append_activity(
             "info", "exits", "paper entry opened",
@@ -248,13 +260,22 @@ def try_paper_entry(mint, reason):
 
 
 def picks_loop():
-    interval = int(os.getenv("SUNPARK_PICKS_INTERVAL", "60"))
     cooldown = int(os.getenv("SUNPARK_PICK_AI_COOLDOWN", "600"))
     auto_mode = os.getenv("SUNPARK_AUTO_PAPER_MODE", "mechanical").lower()
-    auto_max = int(os.getenv("SUNPARK_AUTO_PAPER_MAX", "1"))
+    auto_max = int(os.getenv("SUNPARK_AUTO_PAPER_MAX", "2"))
+    min_interval = float(os.getenv("SUNPARK_PICKS_MIN_INTERVAL", "5"))
+    ai_enabled = os.getenv("SUNPARK_AI_ENABLED", "0") == "1"
     ai_last_run = {}
+    last_picks_time = 0.0
     while True:
-        time.sleep(interval)
+        picks_event.wait(timeout=min_interval)
+        picks_event.clear()
+        elapsed = time.time() - last_picks_time
+        if elapsed < min_interval:
+            picks_event.set()
+            time.sleep(min_interval - elapsed)
+            continue
+        last_picks_time = time.time()
         try:
             enqueue_top_holder_jobs()
             picks = compute_rankings()
@@ -271,6 +292,7 @@ def picks_loop():
                     "score": pick["score"],
                     "rank": pick["rank"],
                     "reasons": pick["reasons"],
+                    "event_category": pick.get("event_category"),
                     "created_at": (existing.get(pick["mint"]) or {}).get("created_at"),
                     "ai_signal": (existing.get(pick["mint"]) or {}).get("ai_signal"),
                     "ai_confidence": (existing.get(pick["mint"]) or {}).get("ai_confidence"),
@@ -291,38 +313,39 @@ def picks_loop():
                             {"mint": pick["mint"][:12], "error": str(error)[:300]},
                         )
 
-            for pick in picks:
-                mint = pick["mint"]
-                if now - ai_last_run.get(mint, 0) < cooldown:
-                    continue
-                try:
-                    started = time.perf_counter()
-                    result = normalize_ai_result(judge_volume_spike(pick_payload(pick)))
-                    latency = (time.perf_counter() - started) * 1000
-                    ai_last_run[mint] = now
-                    if result["signal"] == "IGNORE" and result["reason"] == "AI returned no result":
+            if ai_enabled:
+                for pick in picks:
+                    mint = pick["mint"]
+                    if now - ai_last_run.get(mint, 0) < cooldown:
+                        continue
+                    try:
+                        started = time.perf_counter()
+                        result = normalize_ai_result(judge_volume_spike(pick_payload(pick)))
+                        latency = (time.perf_counter() - started) * 1000
+                        ai_last_run[mint] = now
+                        if result["signal"] == "IGNORE" and result["reason"] == "AI returned no result":
+                            append_activity(
+                                "warn", "ranker", "AI last-pass returned nothing",
+                                {"mint": mint[:12], "latency_ms": round(latency, 1)},
+                            )
+                        for row in rows:
+                            if row["mint"] == mint:
+                                row["ai_signal"] = result["signal"]
+                                row["ai_confidence"] = result.get("confidence")
+                                row["ai_reason"] = result.get("reason")
+                                row["ai_latency_ms"] = round(latency, 1)
                         append_activity(
-                            "warn", "ranker", "AI last-pass returned nothing",
-                            {"mint": mint[:12], "latency_ms": round(latency, 1)},
+                            "info", "ranker", "AI last-pass",
+                            {"mint": mint[:12], "signal": result["signal"], "latency_ms": round(latency, 1)},
                         )
-                    for row in rows:
-                        if row["mint"] == mint:
-                            row["ai_signal"] = result["signal"]
-                            row["ai_confidence"] = result.get("confidence")
-                            row["ai_reason"] = result.get("reason")
-                            row["ai_latency_ms"] = round(latency, 1)
-                    save_picks(rows)
-                    append_activity(
-                        "info", "ranker", "AI last-pass",
-                        {"mint": mint[:12], "signal": result["signal"], "latency_ms": round(latency, 1)},
-                    )
-                    if auto_mode == "ai" and result["signal"] == "BUY":
-                        try_paper_entry(mint, "entry_ai_buy")
-                except Exception as error:
-                    append_activity(
-                        "warn", "ranker", "AI last-pass failed",
-                        {"mint": mint[:12], "error": str(error)[:300]},
-                    )
+                        if auto_mode == "ai" and result["signal"] == "BUY":
+                            try_paper_entry(mint, "entry_ai_buy")
+                    except Exception as error:
+                        append_activity(
+                            "warn", "ranker", "AI last-pass failed",
+                            {"mint": mint[:12], "error": str(error)[:300]},
+                        )
+                save_picks(rows)
         except Exception as error:
             append_activity(
                 "warn", "ranker", "picks loop failed",
@@ -503,6 +526,7 @@ def process_candidate(candidate, connection, run_ai=True):
     card = build_analysis_card(event, metadata)
     apply_event_to_rollup(event, card)
     update_registry(event, card)
+    picks_event.set()
     queue_safety_job(mint)
     queue_holders_job(mint)
     if metadata and metadata.get("status") == "pending":

@@ -11,8 +11,9 @@ from filters import selection_gate
 from intel import assess as intel_assess
 from stats import rollup
 
-TOP_PICKS = int(os.getenv("SUNPARK_TOP_PICKS", "5"))
+TOP_PICKS = int(os.getenv("SUNPARK_TOP_PICKS", "10"))
 SCAN_LIMIT = int(os.getenv("SUNPARK_RANK_SCAN_LIMIT", "60"))
+MAX_SCAN_AGE_S = float(os.getenv("SUNPARK_MAX_SCAN_AGE_MIN", "60")) * 60
 
 
 def _clamp(value, low, high):
@@ -74,6 +75,8 @@ def compute_rankings(limit=None):
     rows = rollup.top_mints(300, limit=SCAN_LIMIT, timestamp=now)
     ranked = []
     for row in rows:
+        if row.get("age_seconds", 0) > MAX_SCAN_AGE_S:
+            continue
         mint = row["mint"]
         snapshot = rollup.stats_for(mint, now)
         if not snapshot:

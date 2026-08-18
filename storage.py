@@ -1,6 +1,7 @@
 import json
 import os
 import sqlite3
+import threading
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -15,12 +16,21 @@ def utc_now():
     return datetime.now(timezone.utc).isoformat()
 
 
+_schema_checked = False
+_schema_lock = threading.Lock()
+
+
 def get_db():
+    """Create a new SQLite connection. Schema is initialized exactly once."""
+    global _schema_checked
     DB_PATH.parent.mkdir(parents=True, exist_ok=True)
     connection = sqlite3.connect(DB_PATH, timeout=30)
     connection.execute("PRAGMA busy_timeout = 30000")
     connection.execute("PRAGMA journal_mode = WAL")
-    initialize_schema(connection)
+    with _schema_lock:
+        if not _schema_checked:
+            initialize_schema(connection)
+            _schema_checked = True
     return connection
 
 
@@ -120,6 +130,7 @@ def initialize_schema(connection):
             kind TEXT NOT NULL,
             entry_time REAL NOT NULL,
             entry_price_sol REAL NOT NULL,
+            entry_category TEXT,
             price_5m REAL,
             price_30m REAL,
             return_5m_pct REAL,
@@ -143,6 +154,7 @@ def initialize_schema(connection):
             score REAL NOT NULL,
             rank INTEGER NOT NULL,
             reasons_json TEXT NOT NULL,
+            event_category TEXT,
             ai_signal TEXT,
             ai_confidence REAL,
             ai_reason TEXT,
@@ -170,6 +182,11 @@ def initialize_schema(connection):
             reason TEXT,
             created_at TEXT NOT NULL
         );
+        CREATE TABLE IF NOT EXISTS paper_state (
+            key TEXT PRIMARY KEY,
+            value_json TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );
         CREATE INDEX IF NOT EXISTS idx_activity_created
             ON activity_logs(created_at DESC);
         CREATE INDEX IF NOT EXISTS idx_candidates_received
@@ -181,6 +198,41 @@ def initialize_schema(connection):
     }
     if "analysis_json" not in columns:
         connection.execute("ALTER TABLE candidates ADD COLUMN analysis_json TEXT")
+    outcome_cols = {
+        row[1] for row in connection.execute("PRAGMA table_info(outcomes)")
+    }
+    if "entry_category" not in outcome_cols:
+        connection.execute("ALTER TABLE outcomes ADD COLUMN entry_category TEXT")
+    picks_cols = {
+        row[1] for row in connection.execute("PRAGMA table_info(picks)")
+    }
+    if "event_category" not in picks_cols:
+        connection.execute("ALTER TABLE picks ADD COLUMN event_category TEXT")
+    trade_cols = {
+        row[1] for row in connection.execute("PRAGMA table_info(paper_trades)")
+    }
+    if "is_wash" not in trade_cols:
+        connection.execute("ALTER TABLE paper_trades ADD COLUMN is_wash INTEGER DEFAULT 0")
+        connection.execute(
+            "UPDATE paper_trades SET is_wash = 1 WHERE mint IN "
+            "(SELECT mint FROM paper_trades GROUP BY mint HAVING COUNT(*) > 8)"
+        )
+    if "is_phantom" not in trade_cols:
+        connection.execute("ALTER TABLE paper_trades ADD COLUMN is_phantom INTEGER DEFAULT 0")
+        connection.execute(
+            "UPDATE paper_trades SET is_phantom = 1 WHERE id IN ("
+            "  SELECT t2.id FROM paper_trades t2"
+            "  JOIN paper_trades t1 ON t1.mint = t2.mint"
+            "  WHERE t2.action = 'tp2' AND t1.action = 'tp2' AND t1.id < t2.id"
+            "  AND NOT EXISTS ("
+            "    SELECT 1 FROM paper_trades t3"
+            "    WHERE t3.mint = t2.mint AND t3.action = 'open'"
+            "    AND t3.id > t1.id AND t3.id < t2.id"
+            "  )"
+            ")"
+        )
+    if "entry_source" not in trade_cols:
+        connection.execute("ALTER TABLE paper_trades ADD COLUMN entry_source TEXT DEFAULT 'rollup'")
     connection.commit()
 
 
@@ -371,14 +423,15 @@ def insert_outcome(row):
     try:
         cursor = connection.execute(
             "INSERT INTO outcomes "
-            "(mint, kind, entry_time, entry_price_sol, exit_reason, ai_signal, "
+            "(mint, kind, entry_time, entry_price_sol, entry_category, exit_reason, ai_signal, "
             "ai_confidence, mode, score, rank, created_at) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 row.get("mint"),
                 row.get("kind"),
                 row.get("entry_time"),
                 row.get("entry_price_sol"),
+                row.get("entry_category"),
                 row.get("exit_reason"),
                 row.get("ai_signal"),
                 row.get("ai_confidence"),
@@ -640,13 +693,14 @@ def save_picks(rows):
         for row in rows:
             connection.execute(
                 "INSERT OR REPLACE INTO picks "
-                "(mint, score, rank, reasons_json, ai_signal, ai_confidence, ai_reason, ai_latency_ms, created_at, updated_at) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "(mint, score, rank, reasons_json, event_category, ai_signal, ai_confidence, ai_reason, ai_latency_ms, created_at, updated_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (
                     row["mint"],
                     row.get("score", 0),
                     row.get("rank", 0),
                     json.dumps(row.get("reasons", [])),
+                    row.get("event_category"),
                     row.get("ai_signal"),
                     row.get("ai_confidence"),
                     row.get("ai_reason"),
@@ -762,8 +816,8 @@ def save_paper_trade(trade):
     connection = get_db()
     try:
         connection.execute(
-            "INSERT INTO paper_trades (mint, action, price_sol, sol_value, pnl_sol, reason, created_at) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            "INSERT INTO paper_trades (mint, action, price_sol, sol_value, pnl_sol, reason, created_at, is_wash, is_phantom, entry_source) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 trade.get("mint"),
                 trade.get("action"),
@@ -772,6 +826,9 @@ def save_paper_trade(trade):
                 trade.get("pnl_sol"),
                 trade.get("reason"),
                 trade.get("created_at") or utc_now(),
+                trade.get("is_wash", 0),
+                trade.get("is_phantom", 0),
+                trade.get("entry_source", "rollup"),
             ),
         )
         connection.commit()
@@ -783,7 +840,7 @@ def load_paper_trades(limit=500):
     connection = get_db()
     try:
         rows = connection.execute(
-            "SELECT mint, action, price_sol, sol_value, pnl_sol, reason, created_at "
+            "SELECT mint, action, price_sol, sol_value, pnl_sol, reason, created_at, is_wash, is_phantom, entry_source "
             "FROM paper_trades ORDER BY id DESC LIMIT ?",
             (limit,),
         ).fetchall()
@@ -796,9 +853,73 @@ def load_paper_trades(limit=500):
                 "pnl_sol": row[4],
                 "reason": row[5],
                 "created_at": row[6],
+                "is_wash": row[7] or 0,
+                "is_phantom": row[8] or 0,
+                "entry_source": row[9] or "rollup",
             }
             for row in rows
         ]
+    finally:
+        connection.close()
+
+
+def save_paper_state(key, value):
+    connection = get_db()
+    try:
+        connection.execute(
+            "INSERT OR REPLACE INTO paper_state (key, value_json, updated_at) "
+            "VALUES (?, ?, ?)",
+            (key, json.dumps(value), utc_now()),
+        )
+        connection.commit()
+    finally:
+        connection.close()
+
+
+def load_paper_state(key, default=None):
+    connection = get_db()
+    try:
+        row = connection.execute(
+            "SELECT value_json FROM paper_state WHERE key = ?", (key,)
+        ).fetchone()
+        if not row:
+            return default
+        return json.loads(row[0])
+    except (TypeError, ValueError):
+        return default
+    finally:
+        connection.close()
+
+
+def clear_paper_trades():
+    connection = get_db()
+    try:
+        connection.execute("DELETE FROM paper_trades")
+        connection.execute("DELETE FROM paper_positions")
+        connection.commit()
+    finally:
+        connection.close()
+
+
+def prune_old_candidates(keep_hours=24, keep_recent=500):
+    """Delete processed candidates older than keep_hours to prevent DB bloat."""
+    connection = get_db()
+    try:
+        connection.execute(
+            "DELETE FROM candidates WHERE processed_at IS NOT NULL "
+            "AND signature NOT IN ("
+            "  SELECT signature FROM candidates "
+            "  WHERE processed_at IS NOT NULL "
+            "  ORDER BY received_at DESC LIMIT ?"
+            ")",
+            (keep_recent,),
+        )
+        connection.execute(
+            "DELETE FROM candidates WHERE processed_at IS NOT NULL "
+            "AND received_at < datetime('now', ?)",
+            (f"-{keep_hours} hours",),
+        )
+        connection.commit()
     finally:
         connection.close()
 

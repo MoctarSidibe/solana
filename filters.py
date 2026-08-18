@@ -221,6 +221,15 @@ def selection_gate(event, card=None):
     min_liq = _env_float("SUNPARK_MIN_INIT_LIQ_SOL", 0.0)
 
     age = stats.get("age_seconds")
+    if mint:
+        try:
+            from storage import get_token_registry
+            reg = get_token_registry(mint)
+            if reg and reg.get("graduated_at") and reg.get("status") == "migrated":
+                import time
+                age = time.time() - reg["graduated_at"]
+        except Exception:
+            pass
     if max_age and age is not None and age / 60 > max_age:
         reasons.append("old_token")
     elif age is None:

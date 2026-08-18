@@ -5,9 +5,10 @@ from filters import compact_stats, selection_gate
 from stats import rollup
 from storage import get_db, load_picks
 
-_STATUS_CACHE = {"heavy": (0.0, {}), "recent": (0.0, [])}
+_STATUS_CACHE = {"heavy": (0.0, {}), "recent": (0.0, []), "migrations": (0.0, {})}
 _STATUS_CACHE_TTL = 60
 _RECENT_CACHE_TTL = 20
+_MIGRATIONS_CACHE_TTL = 120
 
 
 def _cached(name, fn):
@@ -74,35 +75,32 @@ code{color:#a9d6ff} .signal-BUY{color:#53d69a}.signal-SELL{color:#ff9f7e}.signal
 </style>
 </head>
 <body><main>
-<h1>SunPark Monitor</h1><div class="muted"><a href="/sunpark/logs">Activity logs</a> | Rules vs DeepSeek paper-trading pipeline. Refreshes every 10 seconds.</div>
+<h1><svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="#f4c95d" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:middle;margin-right:6px"><circle cx="12" cy="12" r="5"/><line x1="12" y1="1" x2="12" y2="3"/><line x1="12" y1="21" x2="12" y2="23"/><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"/><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"/><line x1="1" y1="12" x2="3" y2="12"/><line x1="21" y1="12" x2="23" y2="12"/><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"/><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"/></svg>SunPark Monitor</h1><div class="muted"><a href="/sunpark/logs">Activity logs</a> | Rules vs DeepSeek paper-trading pipeline. Refreshes every 10 seconds.</div>
  <section class="grid" id="cards"></section>
- <h2>Live Picks (Top-5)</h2>
+ <h2>Paper Account (dry-run)</h2>
+  <div class="muted">Virtual PnL from the mechanical exit engine. Honest PnL excludes wash trades and applies 30% slippage + fees.</div>
+  <section class="grid" id="paperCards"></section>
+   <table><thead><tr><th>Honest</th><th>Open</th><th>Closed</th><th>Wins</th><th>Honest PnL</th><th>Position</th><th>State</th><th>Entry</th><th>Peak</th></tr></thead>
+   <tbody id="paper"><tr><td colspan="9">Loading...</td></tr></tbody></table>
+ <h2>Live Picks (Top-10)</h2>
  <div class="muted">Mechanical rank of gate-clean mints; DeepSeek is a last-pass sanity check.</div>
  <table><thead><tr><th>#</th><th>Token</th><th>Score</th><th>Why</th><th>AI verdict</th><th>AI reason</th></tr></thead>
  <tbody id="picks"><tr><td colspan="6">Loading...</td></tr></tbody></table>
  <h2>Live Flow</h2>
  <div class="muted">Top mints by 5-minute SOL volume, rolled from the stream in-memory.</div>
- <table><thead><tr><th>Token</th><th>5m VOL (SOL)</th><th>Buy:Sell</th><th>Net (SOL)</th><th>Buyers</th><th>Sellers</th><th>Age</th><th>Init Liq</th></tr></thead>
-  <tbody id="flow"><tr><td colspan="8">Loading...</td></tr></tbody></table>
+ <table><thead><tr><th>Token</th><th>5m VOL (SOL)</th><th>Buy:Sell</th><th>Net (SOL)</th><th>Buyers</th><th>Sellers</th><th>Age</th></tr></thead>
+  <tbody id="flow"><tr><td colspan="7">Loading...</td></tr></tbody></table>
   <h2>RPC Enrichment Health</h2>
   <div class="muted">Background RPC caches (holders, mint/freeze safety, metadata, price coverage). Green = that cache is live; amber = partially working; red = RPC-limited (e.g. free tier exhausted) and self-healing once a working RPC is available.</div>
   <section class="grid" id="enrich"></section>
-   <h2>Paper Account (dry-run)</h2>
-  <div class="muted">Virtual PnL from the mechanical exit engine. Never touches a real wallet.</div>
-  <table><thead><tr><th>Balance (SOL)</th><th>Open positions</th><th>Closed</th><th>Wins</th><th>Realized PnL (SOL)</th><th>Position</th><th>State</th><th>Entry</th><th>Now</th><th>Peak</th></tr></thead>
-  <tbody id="paper"><tr><td colspan="10">Loading...</td></tr></tbody></table>
   <h2>Edge (forward outcomes)</h2>
   <div class="muted">Forward +5m/+30m returns labeled at maturity from live prices; win rate = % of resolved with +30m return. No hindsight, no guessing.</div>
   <section class="grid" id="edgeCards"></section>
-  <h3>By entry mode</h3>
-  <table><thead><tr><th>Mode</th><th>Samples</th><th>Resolved</th><th>Win %</th><th>Avg +30m</th><th>Median +30m</th></tr></thead><tbody id="edge-mode"><tr><td colspan="6">Loading...</td></tr></tbody></table>
-  <h3>By AI signal</h3>
-  <table><thead><tr><th>AI signal</th><th>Samples</th><th>Resolved</th><th>Win %</th><th>Avg +30m</th><th>Median +30m</th></tr></thead><tbody id="edge-ai"><tr><td colspan="6">Loading...</td></tr></tbody></table>
-  <h3>By rank</h3>
-  <table><thead><tr><th>Rank</th><th>Samples</th><th>Resolved</th><th>Win %</th><th>Avg +30m</th><th>Median +30m</th></tr></thead><tbody id="edge-rank"><tr><td colspan="6">Loading...</td></tr></tbody></table>
-  <h3>By exit reason</h3>
+   <h3>By entry mode</h3>
+   <table><thead><tr><th>Mode</th><th>Samples</th><th>Resolved</th><th>Win %</th><th>Avg +30m</th><th>Median +30m</th></tr></thead><tbody id="edge-mode"><tr><td colspan="6">Loading...</td></tr></tbody></table>
+   <h3>By exit reason</h3>
   <table><thead><tr><th>Exit</th><th>Samples</th><th>Resolved</th><th>Win %</th><th>Avg +30m</th><th>Median +30m</th></tr></thead><tbody id="edge-exit"><tr><td colspan="6">Loading...</td></tr></tbody></table>
-  <h2>Why Tokens Get Rejected (24h)</h2>
+   <h2>Why Tokens Get Rejected (24h)</h2>
  <table><thead><tr><th>Reason</th><th>Count</th></tr></thead>
  <tbody id="reject"><tr><td colspan="2">Loading...</td></tr></tbody></table>
  <h2>Recent Candidates</h2>
@@ -116,20 +114,27 @@ async function refresh(){
  const r=await fetch('/sunpark/api/status'); if(!r.ok) throw Error(r.status); const d=await r.json();
  const stream=d.ingress.stream||{}; const services=d.services||{};
  document.querySelector('#cards').innerHTML=[
-  card('Webhook',services.webhook?'ONLINE':'CHECK',services.webhook?'ok':'warn'),
-  card('Stream',services.stream?'ONLINE':'STALE',services.stream?'ok':'bad'),
-  card('Notifications',stream.notifications||0), card('Candidates',d.candidates_24h),
-  card('Pending queue',d.pending), card('RPC failures',stream.rpc_failures||0,stream.rpc_failures?'warn':'ok'),
-  card('AI avg latency',`${Math.round(d.ai_avg_latency_ms||0)} ms`), card('AI errors',d.ai_errors, d.ai_errors?'warn':'ok')].join('');
+   card('Webhook',services.webhook?'ONLINE':'CHECK',services.webhook?'ok':'warn'),
+   card('Stream',services.stream?'ONLINE':'STALE',services.stream?'ok':'bad'),
+   card('Pending queue',d.pending), card('RPC failures',stream.rpc_failures||0,stream.rpc_failures?'warn':'ok'),
+   card('AI avg latency',`${Math.round(d.ai_avg_latency_ms||0)} ms`), card('AI errors',d.ai_errors, d.ai_errors?'warn':'ok')].join('');
   document.querySelector('#recent').innerHTML=d.recent.map(x=>`<tr><td>${esc(x.received_at)}</td><td><strong>${esc(x.symbol||x.name||'Unknown')}</strong><br><code>${esc((x.primary_mint||'').slice(0,10))}...</code></td><td>${esc(x.category)}</td><td>${esc(x.flags||'')}</td><td><code>${esc(x.signature.slice(0,12))}...</code></td><td class="signal-${esc(x.rules_signal)}">${esc(x.rules_signal)}</td><td class="signal-${esc(x.ai_signal)}">${esc(x.ai_signal)}</td><td>${esc(x.ai_latency_ms??'-')} ms</td></tr>`).join('')||'<tr><td colspan="8">No candidates yet</td></tr>';
   document.querySelector('#reject').innerHTML=(d.rejection?Object.entries(d.rejection).slice(0,12).map(([k,v])=>`<tr><td>${esc(k)}</td><td>${esc(v)}</td></tr>`).join(''):'')||'<tr><td colspan="2">No rejections yet</td></tr>';
   const f=await fetch('/sunpark/api/top_mints');const flow=await f.json();
-  document.querySelector('#flow').innerHTML=flow.map(x=>`<tr><td><strong>${esc(x.symbol||x.name||'Unknown')}</strong><br><code>${esc((x.mint||'').slice(0,10))}...</code></td><td>${esc(x.vol_5m_sol??0)}</td><td>${esc(x.buy_ratio_5m??'-')}</td><td>${esc(x.net_5m_sol??0)}</td><td>${esc(x.unique_buyers_5m??0)}</td><td>${esc(x.unique_sellers_5m??0)}</td><td>${esc(x.age_minutes??0)}m</td><td>${esc(x.initial_liquidity_sol??'-')}</td></tr>`).join('')||'<tr><td colspan="8">No flow yet</td></tr>';
+  document.querySelector('#flow').innerHTML=flow.map(x=>`<tr><td><strong>${esc(x.symbol||x.name||'Unknown')}</strong><br><code>${esc((x.mint||'').slice(0,10))}...</code></td><td>${esc(x.vol_5m_sol??0)}</td><td>${esc(x.buy_ratio_5m??'-')}</td><td>${esc(x.net_5m_sol??0)}</td><td>${esc(x.unique_buyers_5m??0)}</td><td>${esc(x.unique_sellers_5m??0)}</td><td>${esc(x.age_minutes??0)}m</td></tr>`).join('')||'<tr><td colspan="7">No flow yet</td></tr>';
   const g=await fetch('/sunpark/api/enrichment');const en=await g.json();
   document.querySelector('#enrich').innerHTML=Object.entries(en||{}).map(([k,v])=>card(k,`${v.ok}/${v.total}`,v.status==='ok'?'ok':(v.status==='degraded'?'warn':'bad'))).join('')||card('RPC enrichment','unavailable','bad');
   document.querySelector('#picks').innerHTML=(d.picks||[]).map(x=>`<tr><td>${esc(x.rank)}</td><td><strong>${esc(x.symbol||x.name||'Unknown')}</strong><br><code>${esc((x.mint||'').slice(0,10))}...</code></td><td>${esc(x.score)}</td><td>${esc((x.reasons||[]).join(', '))}</td><td class="signal-${esc(x.ai_signal||'IGNORE')}">${esc(x.ai_signal||'…')}${x.ai_confidence?' ('+esc(x.ai_confidence)+')':''}</td><td>${esc(x.ai_reason||'')}</td></tr>`).join('')||'<tr><td colspan="6">No picks yet</td></tr>';
-  const p=await fetch('/sunpark/api/paper');const paper=await p.json();
-  document.querySelector('#paper').innerHTML=(paper.open_positions!==undefined?`<tr><td><strong>${esc(paper.balance_sol)}</strong></td><td>${esc(paper.open_positions)}</td><td>${esc(paper.closed_count)}</td><td>${esc(paper.win_count)}</td><td class="${paper.realized_pnl_sol>0?'ok':(paper.realized_pnl_sol<0?'bad':'')}">${esc(paper.realized_pnl_sol)}</td><td colspan="5"></td></tr>`+(paper.positions||[]).map(x=>`<tr><td colspan="5"></td><td><code>${esc((x.mint||'').slice(0,10))}...</code></td><td>${esc(x.state)}</td><td>${esc(x.entry_price_sol)}</td><td>${esc(x.current_price_sol??'-')}</td><td>${esc(x.peak_price_sol)}</td></tr>`).join(''):'<tr><td colspan="10">No paper trades yet</td></tr>');
+    const p=await fetch('/sunpark/api/paper');const paper=await p.json();
+    let solUsd=0;
+    try{const sp=await fetch('https://api.coingecko.com/api/v3/simple/price?ids=solana&vs_currencies=usd');const sj=await sp.json();solUsd=sj.solana?.usd||0;}catch(e){}
+    const $=v=>solUsd?(v*solUsd).toFixed(0):'';
+    document.querySelector('#paperCards').innerHTML=paper.open_positions!==undefined?[
+     card('Honest Balance',paper.honest_balance_sol+' SOL'+(solUsd?' ($'+$(paper.honest_balance_sol)+')':''),(paper.honest_balance_sol>10?'ok':'warn')),
+     card('Honest PnL',paper.honest_pnl_sol+' SOL'+(solUsd?' ($'+$(paper.honest_pnl_sol)+')':''),(paper.honest_pnl_sol>0?'ok':'bad')),
+     card('Win rate',paper.honest_closed_count?Math.round(paper.honest_win_count/paper.honest_closed_count*100)+'%':'-',paper.honest_win_count>paper.honest_closed_count/2?'ok':'warn')
+    ].join(''):'';
+    document.querySelector('#paper').innerHTML=(paper.open_positions!==undefined?`<tr><td class="${paper.honest_balance_sol>10?'ok':'warn'}"><strong>${esc(paper.honest_balance_sol)}</strong>${solUsd?' <span class="muted">($'+$(paper.honest_balance_sol)+')</span>':''}</td><td>${esc(paper.open_positions)}</td><td>${esc(paper.honest_closed_count||paper.closed_count)}</td><td>${esc(paper.honest_win_count||paper.win_count)}</td><td class="${paper.honest_pnl_sol>0?'ok':'bad'}">${esc(paper.honest_pnl_sol)}${solUsd?' <span class="muted">($'+$(paper.honest_pnl_sol)+')</span>':''}</td><td colspan="4"></td></tr>`+(paper.positions||[]).map(x=>`<tr><td colspan="5"></td><td><code>${esc((x.mint||'').slice(0,10))}...</code></td><td>${esc(x.state)}</td><td>${esc(x.entry_price_sol)}</td><td>${esc(x.peak_price_sol)}</td></tr>`).join(''):'<tr><td colspan="9">No paper trades yet</td></tr>');
   const e=await fetch('/sunpark/api/edge');const edge=await e.json();
   const s=edge.summary||{};
   document.querySelector('#edgeCards').innerHTML=[
@@ -138,7 +143,7 @@ async function refresh(){
    card('Avg +30m',s.avg_return_30m_pct==null?'-':s.avg_return_30m_pct+'%',(s.avg_return_30m_pct||0)>0?'ok':'warn'),
    card('Median +30m',s.median_return_30m_pct==null?'-':s.median_return_30m_pct+'%'), card('No data',s.nodata||0)].join('');
   function groupRows(obj){return Object.entries(obj||{}).map(([k,v])=>`<tr><td>${esc(k)}</td><td>${esc(v.samples??0)}</td><td>${esc(v.resolved??0)}</td><td>${v.win_rate_pct==null?'-':esc(v.win_rate_pct+'%')}</td><td>${v.avg_return_30m_pct==null?'-':esc(v.avg_return_30m_pct+'%')}</td><td>${v.median_return_30m_pct==null?'-':esc(v.median_return_30m_pct+'%')}</td></tr>`).join('')}
-  ['mode','ai','rank','exit'].forEach(k=>document.querySelector('#edge-'+k).innerHTML=groupRows(edge['by_'+k])||'<tr><td colspan="6">No outcomes yet</td></tr>');
+  ['mode','exit'].forEach(k=>document.querySelector('#edge-'+k).innerHTML=groupRows(edge['by_'+k])||'<tr><td colspan="6">No outcomes yet</td></tr>');
 }
 refresh().catch(e=>document.querySelector('#cards').innerHTML=card('Dashboard error',e.message,'bad')); setInterval(()=>refresh().catch(()=>{}),10000);
 </script></body></html>"""
@@ -339,6 +344,107 @@ def rejection_counts(connection, hours=24):
     return dict(sorted(counts.items(), key=lambda pair: -pair[1]))
 
 
+def migrations_payload():
+    """DEX migration statistics: graduated tokens, forward returns, dev filter analysis."""
+    cached = _STATUS_CACHE["migrations"]
+    if time.time() - cached[0] < _MIGRATIONS_CACHE_TTL and cached[1]:
+        return cached[1]
+
+    connection = get_db()
+    try:
+        now = time.time()
+        rows = connection.execute("""
+            SELECT
+                r.mint, r.creator, r.graduated_at, r.status,
+                o.entry_time, o.entry_price_sol,
+                o.price_5m, o.price_30m,
+                o.return_5m_pct, o.return_30m_pct,
+                o.peak_price_sol, o.peak_pct,
+                o.exit_reason
+            FROM token_registry r
+            LEFT JOIN outcomes o ON r.mint = o.mint AND o.kind = 'pick'
+            WHERE r.status = 'migrated'
+            ORDER BY r.graduated_at DESC
+            LIMIT 200
+        """).fetchall()
+
+        total_grad = len(rows)
+        with_outcome = [r for r in rows if r["entry_time"] is not None]
+
+        peak_2x = sum(1 for r in with_outcome if r["peak_pct"] and r["peak_pct"] >= 100)
+        ret30_2x = sum(1 for r in with_outcome if r["return_30m_pct"] and r["return_30m_pct"] >= 100)
+        ret30_3x = sum(1 for r in with_outcome if r["return_30m_pct"] and r["return_30m_pct"] >= 200)
+        returns_30m = [r["return_30m_pct"] for r in with_outcome if r["return_30m_pct"] is not None]
+
+        avg_ret = round(sum(returns_30m) / len(returns_30m), 2) if returns_30m else None
+        med_ret = round(sorted(returns_30m)[len(returns_30m) // 2], 2) if returns_30m else None
+
+        dev_pass_count = 0
+        dev_pass_wins = 0
+        dev_fail_count = 0
+        dev_fail_wins = 0
+
+        for r in with_outcome:
+            creator = r["creator"]
+            if not creator:
+                continue
+            grad_row = connection.execute("""
+                SELECT COUNT(*) as gc, MAX(graduated_at) as lg
+                FROM token_registry WHERE creator = ? AND status = 'migrated'
+            """, (creator,)).fetchone()
+            gc = grad_row["gc"] or 0
+            lg = grad_row["lg"]
+            quiet = (now - lg) / 86400 if lg else None
+            passes = gc >= 1 and quiet is not None and quiet >= 7
+            if passes:
+                dev_pass_count += 1
+                if r["return_30m_pct"] and r["return_30m_pct"] >= 100:
+                    dev_pass_wins += 1
+            elif gc >= 1:
+                dev_fail_count += 1
+                if r["return_30m_pct"] and r["return_30m_pct"] >= 100:
+                    dev_fail_wins += 1
+
+        recent = []
+        for r in rows[:15]:
+            grad_ts = r["graduated_at"]
+            age_min = round((now - grad_ts) / 60, 0) if grad_ts else None
+            recent.append({
+                "mint": r["mint"],
+                "creator": r["creator"],
+                "graduated_ago_min": age_min,
+                "return_5m_pct": r["return_5m_pct"],
+                "return_30m_pct": r["return_30m_pct"],
+                "peak_pct": r["peak_pct"],
+                "exit_reason": r["exit_reason"],
+            })
+
+        result = {
+            "total_graduations": total_grad,
+            "with_outcome": len(with_outcome),
+            "peak_2x_count": peak_2x,
+            "ret30_2x_count": ret30_2x,
+            "ret30_3x_count": ret30_3x,
+            "peak_2x_pct": round(peak_2x / len(with_outcome) * 100, 1) if with_outcome else None,
+            "ret30_2x_pct": round(ret30_2x / len(with_outcome) * 100, 1) if with_outcome else None,
+            "avg_return_30m": avg_ret,
+            "median_return_30m": med_ret,
+            "dev_pass_count": dev_pass_count,
+            "dev_pass_wins": dev_pass_wins,
+            "dev_pass_win_rate": round(dev_pass_wins / dev_pass_count * 100, 1) if dev_pass_count else None,
+            "dev_fail_count": dev_fail_count,
+            "dev_fail_wins": dev_fail_wins,
+            "dev_fail_win_rate": round(dev_fail_wins / dev_fail_count * 100, 1) if dev_fail_count else None,
+            "recent": recent,
+        }
+        _STATUS_CACHE["migrations"] = (time.time(), result)
+        return result
+    except Exception:
+        return {"total_graduations": 0, "with_outcome": 0, "recent": []}
+    finally:
+        connection.close()
+
+
 def picks_payload():
     picks = load_picks(10)
     if not picks:
@@ -382,7 +488,7 @@ def paper_payload():
     try:
         from exits import paper
 
-        summary = paper.summary()
+        summary = paper.honest_summary()
         positions = []
         for mint, position in paper.positions.items():
             snapshot = rollup.stats_for(mint) or {}

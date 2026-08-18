@@ -76,6 +76,7 @@ def record_pick_outcome(pick):
                 "kind": "pick",
                 "entry_time": time.time(),
                 "entry_price_sol": entry_price,
+                "entry_category": pick.get("event_category"),
                 "ai_signal": pick.get("ai_signal"),
                 "ai_confidence": pick.get("ai_confidence"),
                 "mode": "pick",
@@ -106,6 +107,7 @@ def record_paper_outcome(trade):
                     "kind": "paper",
                     "entry_time": entry_time,
                     "entry_price_sol": entry_price,
+                    "entry_category": trade.get("event_category"),
                     "mode": _mode_from_reason(trade.get("reason")),
                     "ai_signal": trade.get("ai_signal"),
                 }

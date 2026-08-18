@@ -156,11 +156,11 @@ class VolumeRollup:
     def stats_for(self, mint, timestamp=None):
         now = timestamp or time.time()
         with self.lock:
-            stat = self.mints.get(mint)
-            if not stat:
-                return None
             self._prune(now)
-            return self._snapshot(self.mints.get(mint), now) if mint in self.mints else None
+        stat = self.mints.get(mint)
+        if not stat:
+            return None
+        return self._snapshot(stat, now)
 
     def _prune(self, now):
         cutoff = now - IDLE_EXPIRE_S
@@ -173,21 +173,22 @@ class VolumeRollup:
 
     def top_mints(self, window_seconds, limit=12, timestamp=None):
         now = timestamp or time.time()
-        results = []
         with self.lock:
             self._prune(now)
-            for stat in self.mints.values():
-                bucket = [
-                    item for item in stat.events
-                    if item[0] >= now - window_seconds
-                ]
-                summary = _summarize(bucket)
-                summary["mint"] = stat.mint
-                summary["age_seconds"] = max(int(now - stat.first_seen), 0)
-                summary["initial_liquidity_sol"] = stat.initial_liquidity_sol
-                if stat.price_sol is not None:
-                    summary["price_sol"] = stat.price_sol
-                results.append(summary)
+            mints_copy = dict(self.mints)
+        results = []
+        for stat in mints_copy.values():
+            bucket = [
+                item for item in stat.events
+                if item[0] >= now - window_seconds
+            ]
+            summary = _summarize(bucket)
+            summary["mint"] = stat.mint
+            summary["age_seconds"] = max(int(now - stat.first_seen), 0)
+            summary["initial_liquidity_sol"] = stat.initial_liquidity_sol
+            if stat.price_sol is not None:
+                summary["price_sol"] = stat.price_sol
+            results.append(summary)
         results.sort(key=lambda item: item["vol_sol"], reverse=True)
         return results[:limit]
 
@@ -195,10 +196,11 @@ class VolumeRollup:
         now = timestamp or time.time()
         with self.lock:
             self._prune(now)
-            return [
-                self._snapshot(stat, now)
-                for stat in self.mints.values()
-            ]
+            mints_copy = dict(self.mints)
+        return [
+            self._snapshot(stat, now)
+            for stat in mints_copy.values()
+        ]
 
     def restore(self, rows):
         with self.lock:

@@ -20,8 +20,8 @@ RPC_URLS = [
     if item.strip()
 ]
 RPC_URLS += [
-    "https://api.mainnet-beta.solana.com",
     "https://solana-rpc.publicnode.com",
+    "https://api.mainnet-beta.solana.com",
 ]
 RPC_URLS = list(dict.fromkeys(RPC_URLS))[:3]
 memory_cache = {}

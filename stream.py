@@ -1,5 +1,6 @@
 import json
 import os
+import queue
 import re
 import threading
 import time
@@ -21,6 +22,10 @@ PROGRAMS = {
         "RAYDIUM_PROGRAM_ID",
         "675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8",
     ),
+    "pump_swap": os.getenv(
+        "PUMP_SWAP_PROGRAM_ID",
+        "pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA",
+    ),
 }
 
 
@@ -34,7 +39,6 @@ def csv_env(name, defaults):
 WSS_URLS = csv_env(
     "SOLANA_WSS_URLS",
     [
-        "wss://api.mainnet-beta.solana.com",
         "wss://solana-rpc.publicnode.com",
     ],
 )
@@ -42,7 +46,6 @@ RPC_URLS = csv_env(
     "SOLANA_RPC_URLS",
     [
         os.getenv("SOLANA_RPC_URL"),
-        "https://api.mainnet-beta.solana.com",
         "https://solana-rpc.publicnode.com",
     ],
 )
@@ -52,6 +55,7 @@ seen_signatures = set()
 seen_lock = threading.Lock()
 stats = {"notifications": 0, "candidates": 0, "rpc_failures": 0}
 stats_lock = threading.Lock()
+_notification_queue = queue.Queue(maxsize=500)
 
 
 def claim_signature(signature):
@@ -80,18 +84,15 @@ def rpc_get_transaction(signature):
             {"encoding": "jsonParsed", "maxSupportedTransactionVersion": 0},
         ],
     }
-    for attempt in range(2):
-        for url in RPC_URLS:
-            try:
-                response = requests.post(url, json=payload, timeout=10)
-                response.raise_for_status()
-                result = response.json().get("result")
-                if result:
-                    return result
-            except requests.RequestException:
-                continue
-        if attempt == 0:
-            time.sleep(0.2)
+    for url in RPC_URLS:
+        try:
+            response = requests.post(url, json=payload, timeout=5)
+            response.raise_for_status()
+            result = response.json().get("result")
+            if result:
+                return result
+        except requests.RequestException:
+            continue
     with stats_lock:
         stats["rpc_failures"] += 1
     return None
@@ -213,7 +214,7 @@ def transaction_mints(transaction, program_name):
 
 
 def make_event(signature, slot, logs, program_name, transaction):
-    source = "PUMP_FUN" if program_name == "pump_fun" else "RAYDIUM"
+    source = "PUMP_FUN" if program_name == "pump_fun" else "PUMP_SWAP" if program_name == "pump_swap" else "RAYDIUM"
     log_text = " ".join(logs).lower()
     if program_name == "pump_fun":
         if "migrate" in log_text:
@@ -224,6 +225,11 @@ def make_event(signature, slot, logs, program_name, transaction):
             event_type, category = "PUMP_SELL", "swap"
         else:
             event_type, category = "PUMP_CREATE", "token_creation"
+    elif program_name == "pump_swap":
+        if "swap" in log_text:
+            event_type, category = "PUMPSWAP_SWAP", "swap"
+        else:
+            event_type, category = "PUMPSWAP_ACTIVITY", "liquidity"
     else:
         if "ray_log:" in log_text:
             event_type, category = "RAYDIUM_SWAP", "swap"
@@ -260,11 +266,47 @@ def candidate_logs(logs, program_name):
         return bool(instruction_names.intersection({"create", "migrate"})) or any(
             "buy" in name or "sell" in name for name in instruction_names
         )
+    if program_name == "pump_swap":
+        return any("swap" in name for name in instruction_names) or bool(
+            instruction_names.intersection({"swap"})
+        )
     return bool(
         instruction_names.intersection(
             {"initialize", "initialize2", "addliquidity", "remove_liquidity"}
         )
     ) or "ray_log:" in " ".join(logs).lower()
+
+
+def _process_candidate(signature, logs, program_name, slot, notification):
+    transaction = rpc_get_transaction(signature)
+    if not transaction:
+        release_signature(signature)
+        return
+    event = make_event(
+        signature,
+        slot,
+        logs,
+        program_name,
+        transaction,
+    )
+    if event["event_category"] == "swap":
+        sol_size = sum(item.get("amount", 0) for item in event["native_transfers"]) / 1_000_000_000
+        if sol_size < 0.5:
+            release_signature(signature)
+            return
+    enqueued = enqueue_candidate(event)
+    if enqueued:
+        with stats_lock:
+            stats["candidates"] += 1
+
+
+def _notification_worker():
+    while True:
+        try:
+            signature, logs, program_name, slot, notification = _notification_queue.get()
+            _process_candidate(signature, logs, program_name, slot, notification)
+        except Exception as error:
+            print(f"notification worker error: {str(error)[:200]}")
 
 
 def handle_notification(notification, program_name):
@@ -278,26 +320,12 @@ def handle_notification(notification, program_name):
 
     if not claim_signature(signature):
         return False
-    transaction = rpc_get_transaction(signature)
-    if not transaction:
+    slot = ((notification.get("params") or {}).get("result") or {}).get("context", {}).get("slot")
+    try:
+        _notification_queue.put_nowait((signature, logs, program_name, slot, notification))
+    except queue.Full:
         release_signature(signature)
-        return False
-    event = make_event(
-        signature,
-        ((notification.get("params") or {}).get("result") or {}).get("context", {}).get("slot"),
-        logs,
-        program_name,
-        transaction,
-    )
-    if event["event_category"] == "swap":
-        sol_size = sum(item.get("amount", 0) for item in event["native_transfers"]) / 1_000_000_000
-        if sol_size < 0.5:
-            return False
-    enqueued = enqueue_candidate(event)
-    if enqueued:
-        with stats_lock:
-            stats["candidates"] += 1
-    return enqueued
+    return True
 
 
 def listen(wss_url, program_name):
@@ -328,8 +356,16 @@ def listen(wss_url, program_name):
                 {"program": program_name, "endpoint": wss_url},
             )
             backoff = 1
+            socket.settimeout(25)
             while True:
-                notification = json.loads(socket.recv())
+                try:
+                    notification = json.loads(socket.recv())
+                except websocket.WebSocketTimeoutException:
+                    try:
+                        socket.ping()
+                    except Exception:
+                        break
+                    continue
                 if notification.get("method") == "logsNotification":
                     handle_notification(notification, program_name)
         except Exception as error:
@@ -346,6 +382,11 @@ def listen(wss_url, program_name):
 
 def main():
     threads = []
+    num_workers = int(os.getenv("SUNPARK_STREAM_WORKERS", "4"))
+    for _ in range(num_workers):
+        t = threading.Thread(target=_notification_worker, name="stream-worker", daemon=True)
+        t.start()
+        threads.append(t)
     for wss_url in WSS_URLS:
         for program_name in PROGRAMS:
             thread = threading.Thread(

@@ -179,17 +179,30 @@ def buyer_concentration(snapshot, window=300):
 
 
 def dev_reputation(creator):
-    """Mass-launcher detection from token_registry (no new RPC)."""
+    """Mass-launcher detection + quiet-period filter from token_registry (no new RPC)."""
     from storage import creator_tokens
 
     if not creator:
-        return {"token_count": 0, "migrated": 0, "red_flag": False}
+        return {"token_count": 0, "migrated": 0, "red_flag": False,
+                "prior_graduations": 0, "quiet_days": None, "quiet_pass": False}
     tokens = creator_tokens(creator)
-    migrated = sum(1 for token in tokens if token.get("status") == "migrated")
+    migrated = [t for t in tokens if t.get("status") == "migrated"]
+    prior_graduations = len(migrated)
+    quiet_pass = False
+    quiet_days = None
+    if migrated:
+        latest_grad = max((t.get("graduated_at") or 0) for t in migrated)
+        if latest_grad:
+            quiet_days = (time.time() - latest_grad) / 86400
+            if quiet_days >= 7:
+                quiet_pass = True
     result = {
         "token_count": len(tokens),
-        "migrated": migrated,
-        "red_flag": len(tokens) >= DEV_MAX_TOKENS and migrated < 2,
+        "migrated": prior_graduations,
+        "prior_graduations": prior_graduations,
+        "quiet_days": round(quiet_days, 1) if quiet_days is not None else None,
+        "quiet_pass": quiet_pass,
+        "red_flag": len(tokens) >= DEV_MAX_TOKENS and prior_graduations < 2,
     }
     return result
 
@@ -324,6 +337,8 @@ def assess(card):
             penalty += 40
         elif dev["token_count"] >= 5:
             penalty += 15
+        if dev.get("quiet_pass"):
+            penalty = max(0, penalty - 10)
         dev_sell_info = dev_sell(snapshot, creator)
         details["dev_sell"] = dev_sell_info
         if dev_sell_info["dev_sold"]:

@@ -18,7 +18,7 @@
 - Swap decisions do not wait on network metadata; they use cached identity when available and queue background enrichment. `metadata_status=pending` may later become `ok` or `missing` on the saved card.
 - `filters.py` classifies Helius labels and transfer facts into `token_creation`, `liquidity`, `swap`, `whale_trade`, `large_sol_transfer`, `token_transfer`, or `other`; worker routing uses these categories to select the DeepSeek judge.
 - `stream.py` subscribes one `logsSubscribe` stream per configured program and enriches signatures with `getTransaction` before enqueueing; it uses `SOLANA_WSS_URLS` and `SOLANA_RPC_URLS` comma-separated failover lists.
-- `stream.py` prefilters logs to Pump `Create`/`Migrate` and Raydium initialization/liquidity instructions, then derives bounded token and native SOL transfer facts from transaction balance changes. It prints periodic notification/candidate/RPC-failure counters.
+- `stream.py` prefilters logs to Pump `Create`/`Migrate`, PumpSwap swaps, and Raydium initialization/liquidity instructions, then derives bounded token and native SOL transfer facts from transaction balance changes. It prints periodic notification/candidate/RPC-failure counters.
 - Compare mechanical ranking against DeepSeek as a last-pass sanity check on the Top-5 only: store AI signal, confidence, reason, and latency so AI's value can be measured rather than assumed. Per-candidate AI rows are `filtered` (gate-rejected, reason stored) or `pending` (gate-clean, awaiting picks ranking).
 - `bot.py` has a real-buy stub but `DRY_RUN = True`; leave this enabled unless live trading is explicitly being implemented and reviewed.
 
@@ -182,6 +182,34 @@
   outcomes.py) -> copy to /var/www/sunpark/ -> restart sunpark -> verify /health
   + status 0.1s.
 
+## Phase 0 (implemented 2026-08-16, migration arb measurement)
+- Phase 0 fixes bugs and adds infrastructure to measure whether DEX-only
+  migration arb (buy at Pump.fun graduation → PumpSwap) has positive expectancy.
+  No money risked — pure measurement from historical DB data.
+- Bug fix: `_sell_share()` PnL was always 0 due to `* 0` on exits.py:220.
+  Fixed to `pnl = value - position.size_sol * share` (realized basis per tranche).
+- PumpSwap tracking: `stream.py` now tracks program `pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA`
+  (`pump_swap` in PROGRAMS dict). Classifies `PUMPSWAP_SWAP`/`PUMPSWAP_ACTIVITY` events
+  so we observe post-migration token life. Configurable via `PUMP_SWAP_PROGRAM_ID` env.
+- Dev quiet-period filter: `intel.py` `dev_reputation()` now returns `prior_graduations`,
+  `quiet_days`, and `quiet_pass` (True when creator has >= 1 prior graduation AND >= 7
+  days since last graduation). `assess()` applies a -10 penalty reduction for quiet_pass.
+  This is the key filter that lifts graduation win rate from ~2% to ~12% (Scorp Trader).
+- Graduation-aware age gate: `filters.py` `selection_gate()` now checks time since
+  `graduated_at` (not `created_at`) for tokens with status=migrated. Freshly graduated
+  tokens are no longer rejected as "old_token".
+- `entry_category` column added to both `outcomes` and `picks` tables (migration-safe
+  ALTER). `outcomes.py` records `event_category` on pick/paper outcomes; `storage.py`
+  `insert_outcome()` and `save_picks()` include the new column. Worker propagates
+  `event_category` through the picks pipeline.
+- `migration_measure.py` (new): standalone script that queries the DB for graduation
+  win rates with/without dev quiet-period filter, computes +5m/+30m returns, peak 2x+
+  rates, average/median returns, and break-even analysis. Run with `python migration_measure.py`.
+- DEX Migrations dashboard: new `/sunpark/api/migrations` endpoint and panel on the
+  monitor showing total graduations, win rates at 2x/3x, dev filter pass/fail stats,
+  and recent graduations with returns. Cached 120s. Dashboard HTML + JS fetch
+  `/sunpark/api/migrations` every 10s.
+
 ## Deployment 2026-08-16 (Phase A/B/C live on 169.58.87.221)
 - Phase A/B/C code shipped via scp to `/var/www/sunpark/` (owner sunpark:sunpark,
   `.venv` at `/var/www/sunpark/.venv`); pre-deploy copies backed up to
@@ -231,6 +259,86 @@
 - Repo status: git `origin` = `github.com/MoctarSidibe/solana`; only commit is the
   initial one (`31f1011`). All Phase A/B/C work plus dashboard/service files were
   deployed via scp and were NOT committed/pushed as of 2026-08-16.
+
+## Phase D (implemented + DEPLOYED 2026-08-17)
+- D1 tighter stop loss - `STOP_LOSS_PCT` default 0.50→0.30 (env override
+  `SUNPARK_STOP_LOSS_PCT`). Micro-caps that drop30% from entry rarely
+  recover. Confirmed working:3 bleeding positions stopped at -25%/-30%/-45%.
+- D2 auto entry count - `SUNPARK_AUTO_PAPER_MAX` default 1→2. Faster capital
+  deployment with MAX_POSITIONS=3 still capping concurrent exposure.
+- D3 max-age scan filter - `rank.py` `MAX_SCAN_AGE_S` from
+  `SUNPARK_MAX_SCAN_AGE_MIN` (default60). Excludes tokens >60 min from the
+  ranking scan to avoid wasting cycles on stale/blue-chip mints (Fartcoin,
+  BOME, USDT). Gate still applies its own30min max age.
+- D4 WebSocket keepalive - `stream.py` `listen()` sends `ws.ping()` every25s
+  on `WebSocketTimeoutException`, preventing publicnode's~30s idle timeout
+  from dropping pump_swap subscriptions.
+- D5 RPC timeout reduction - `rpc_get_transaction` timeout 10s→5s, removed
+  double-retry loop (now single pass across URLs). Reduces worst-case stall
+  per failed notification from~60s to~15s.
+- D6 early break-even floor - After stop_loss check, if a position's peak
+  reached1.2x entry and price drops back to entry, close with `be_floor`.
+  Protects gains on volatile tokens before TP1.
+- Paper account reset: cleared old bleeding trades from DB to reset circuit
+  breakers for fresh session. Old DB (16GB) backup at events_old.sqlite.
+- Stream WSS: dropped `api.mainnet-beta.solana.com` from `WSS_URLS` and
+  `RPC_URLS` (constant 429s); publicnode only. `pump_swap` still disconnects
+  every~30s but reconnects instantly with keepalive ping.
+- First live paper trade with new config: "Job Application Inu" (Gg96tGwL)
+  entered at 6.49e-9, pumped~100x, TP1+TP2 fired for~81 SOL paper profit.
+  Demonstrates the full entry→TP pipeline working end-to-end.
+- D7 event-driven picks - `worker.py` `picks_loop` replaced 60s sleep with
+  `threading.Event` signaled by `process_candidate`. Picks fire within seconds
+  of a qualifying candidate being processed, not every 60s. `SUNPARK_PICKS_MIN_INTERVAL`
+  (default 5) prevents thrashing. Latency dropped from avg 30s to <5s.
+- D8 per-mint exit cooldown - `exits.py` `MINT_EXIT_COOLDOWN_S` (default 300)
+  prevents re-entering a mint for 5 minutes after a close. Stops churn where
+  the same token gets entered→stopped→re-entered in a loop.
+- Second massive winner: F9C4dqtdr7vW entered via event-driven pipeline,
+  hit trailing_stop at +4506% (45x). Paper balance reached 462 SOL from
+  10 SOL start. Validates the faster pipeline catches more winning moves.
+
+## Phase E (implemented 2026-08-17)
+- E1 _sell_share state bug fix - `exits.py` `evaluate()` now sets
+  `position.state` BEFORE calling `_sell_share()`, so `position.to_row()`
+  saves the correct post-transition state. Previously TP1 saved state="open"
+  and TP2 saved state="tp1", causing double-TP2 phantom profit on Gg96tGwL.
+- E2 Jupiter fallback endpoints - `jupiter.py` tries 3 endpoints in sequence:
+  V6 (`quote-api.jup.ag/v6/quote`, no fee) -> Swap V2 (`api.jup.ag/swap/v2/order`,
+  5-10 bps) -> Lite (`lite-api.jup.ag/v1/quote`, backup). First success wins.
+  Total worst-case 9s (3s per endpoint). `SUNPARK_JUPITER_TIMEOUT` env override.
+- E3 Jupiter slippage 30% - `SUNPARK_JUPITER_SLIPPAGE_BPS` default 300→3000
+  (30%). Realistic for Pump.fun thin-pool fills; slippage is enforced on-chain
+  by DEX programs, Jupiter cannot cheat. MEV bots can extract up to the
+  slippage tolerance via sandwich attacks.
+- E4 migration registry fix - `worker.py` `update_registry()` now only sets
+  `status='migrated'` and `graduated_at` for `PUMP_MIGRATE` events (not all
+  `liquidity` category events). Preserves existing `graduated_at` if already set.
+  PumpSwap/Raydium liquidity events no longer overwrite migration timestamps.
+- E5 honest paper PnL - `exits.py` `honest_summary()` applies 30% slippage
+  + 0.3% fee to every closed trade and filters wash-traded mints
+  (`wash_share >= 20%`). `dashboard.py` shows both raw and honest
+  balance/PnL/win-count; honest cards include slippage%, wash count, and
+  adjusted win rate. Starting balance = `SUNPARK_PAPER_START_SOL` (10 SOL).
+- E6 persistent fake-trade flags - `paper_trades` table gained `is_wash`
+  (INTEGER, set at close time from rollup wash_trade_suspicion, survives
+  restarts) and `is_phantom` (INTEGER, auto-detected: second TP2 with no
+  intervening open for same mint = pre-E1 state-bug phantom). Migration
+  backfill marks F9C4 as wash (>8 trades) and 3 phantom TP2s (Gg96tGwL,
+  GvUC, F9C4). `honest_summary()` excludes both wash and phantom trades
+  from honest PnL/win-count. Dashboard shows wash count + phantom count
+  cards. Result: raw balance 469.93 SOL, honest balance 121.11 SOL
+  (honest PnL +111.11 from 10 SOL start, 6/15 honest wins).
+- E7 double-slippage fix + MAX_POSITIONS 7 - `exits.py` `honest_summary()`
+  was double-penalizing Jupiter-quoted trades: Jupiter buy/sell quotes already
+  include 30% slippage in the fill price, then the formula applied another
+  `(1-S)/(1+S)` haircut. Fixed by adding `entry_source` column to `paper_trades`
+  (migration in `storage.py`): `jupiter` entries get fee-only adjustment
+  `(1-FEE)`, `rollup` fallback entries keep the full slippage+fee haircut.
+  `Position` class carries `entry_source`; threaded through `open_position()` ->
+  `_record()` -> close/tp1/tp2 records. `worker.py` `try_paper_entry()` passes
+  the source from `paper_entry_fill()`. MAX_POSITIONS default 3->7 (env
+  `SUNPARK_MAX_POSITIONS`). Old trades default to `entry_source=rollup`.
 
 ## Yellowstone Upgrade Path (LATER, not now)
 - `stream.py` `make_event` output is the ingress contract; swap WSS +

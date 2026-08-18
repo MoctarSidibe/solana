@@ -10,6 +10,7 @@ from dashboard import (
     edge_payload,
     enrichment_payload,
     logs_payload,
+    migrations_payload,
     paper_payload,
     picks_payload,
     status_payload,
@@ -153,6 +154,11 @@ def dashboard_edge():
 @app.get("/sunpark/api/enrichment")
 def dashboard_enrichment():
     return jsonify(enrichment_payload())
+
+
+@app.get("/sunpark/api/migrations")
+def dashboard_migrations():
+    return jsonify(migrations_payload())
 
 
 @app.get("/sunpark/logs")
