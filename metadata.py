@@ -14,16 +14,19 @@ METADATA_PROGRAM = "metaqbxxUerdq28cj1RbAWkYQm3ybzjb6a8bt518x1s"
 BASE58 = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz"
 WSOL_MINT = "So11111111111111111111111111111111111111112"
 USDC_MINT = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"
+HELIUS_KEY = os.getenv("HELIUS_AUTH_KEY", "")
+HELIUS_RPC = f"https://mainnet.helius-rpc.com/?api-key={HELIUS_KEY}" if HELIUS_KEY else ""
 RPC_URLS = [
     item.strip()
     for item in os.getenv("SOLANA_RPC_URLS", os.getenv("SOLANA_RPC_URL", "")).split(",")
     if item.strip()
 ]
+if HELIUS_RPC:
+    RPC_URLS.append(HELIUS_RPC)
 RPC_URLS += [
     "https://solana-rpc.publicnode.com",
-    "https://api.mainnet-beta.solana.com",
 ]
-RPC_URLS = list(dict.fromkeys(RPC_URLS))[:3]
+RPC_URLS = list(dict.fromkeys(RPC_URLS))[:4]
 memory_cache = {}
 
 

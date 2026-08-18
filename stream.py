@@ -36,15 +36,21 @@ def csv_env(name, defaults):
     return list(defaults)
 
 
+HELIUS_KEY = os.getenv("HELIUS_AUTH_KEY", "")
+HELIUS_RPC = f"https://mainnet.helius-rpc.com/?api-key={HELIUS_KEY}" if HELIUS_KEY else ""
+HELIUS_WSS = f"wss://mainnet.helius-rpc.com/?api-key={HELIUS_KEY}" if HELIUS_KEY else ""
+
 WSS_URLS = csv_env(
     "SOLANA_WSS_URLS",
     [
+        HELIUS_WSS,
         "wss://solana-rpc.publicnode.com",
     ],
 )
 RPC_URLS = csv_env(
     "SOLANA_RPC_URLS",
     [
+        HELIUS_RPC,
         os.getenv("SOLANA_RPC_URL"),
         "https://solana-rpc.publicnode.com",
     ],
