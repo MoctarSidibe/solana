@@ -15,7 +15,7 @@ import requests
 from dotenv import load_dotenv
 
 from metadata import RPC_URLS, base58_encode
-from storage import get_token_holders, save_token_holders
+from storage import append_activity, get_token_holders, save_token_holders
 
 load_dotenv()
 
@@ -87,6 +87,7 @@ def resolve_token_holders(mint):
         saved = {"mint": mint, "status": "missing"}
         save_token_holders(saved)
         memory_cache[mint] = saved
+        append_activity("warn", "holders", "RPC error saving missing", {"mint": mint[:16], "supply_err": bool(supply.get("error")), "largest_err": bool(largest.get("error"))})
         return saved
 
     accounts = (largest.get("value") or [])

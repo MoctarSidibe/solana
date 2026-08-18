@@ -394,7 +394,7 @@ def queue_metadata_job(signature, event, mint):
     try:
         metadata_jobs.put_nowait((signature, event, mint))
     except queue.Full:
-        append_activity("warn", "worker", "metadata queue full")
+        append_activity("warn", "worker", "metadata queue full", {"mint": mint[:16], "depth": metadata_jobs.qsize()})
 
 
 def queue_safety_job(mint):
@@ -407,7 +407,7 @@ def queue_safety_job(mint):
     try:
         safety_jobs.put_nowait(mint)
     except queue.Full:
-        append_activity("warn", "worker", "safety queue full")
+        append_activity("warn", "worker", "safety queue full", {"mint": mint[:16], "depth": safety_jobs.qsize()})
 
 
 def safety_loop():
@@ -436,7 +436,7 @@ def queue_holders_job(mint):
     try:
         holders_jobs.put_nowait(mint)
     except queue.Full:
-        append_activity("warn", "worker", "holders queue full")
+        append_activity("warn", "worker", "holders queue full", {"mint": mint[:16], "depth": holders_jobs.qsize()})
 
 
 def holders_loop():

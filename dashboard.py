@@ -151,14 +151,28 @@ body{margin:0;background:#10151b;color:#e7edf3;font:15px system-ui,sans-serif}ma
 a{color:#a9d6ff}.muted{color:#91a0ad}table{width:100%;border-collapse:collapse;background:#18212a;margin-top:18px}
 th,td{text-align:left;padding:10px;border-bottom:1px solid #2a3945;font-size:13px}th{color:#91a0ad}
 .info{color:#b9c8d4}.warn{color:#f4c95d}.error{color:#ff7e7e}code{color:#a9d6ff}
+.filters{display:flex;gap:10px;flex-wrap:wrap;margin:14px 0;align-items:end}
+.filters label{font-size:12px;color:#91a0ad;display:flex;flex-direction:column;gap:3px}
+.filters input,.filters select{background:#1e293b;border:1px solid #2a3945;color:#e7edf3;padding:6px 8px;border-radius:4px;font-size:13px}
+.filters button{background:#1e6c2f;border:none;color:#e7edf3;padding:6px 14px;border-radius:4px;cursor:pointer;font-size:13px}
+.filters button:hover{background:#24803a}
 @media(max-width:650px){main{padding:14px}th,td{padding:8px 5px;font-size:11px}}
 </style></head><body><main>
-<h1>Activity Logs</h1><div class="muted"><a href="/sunpark/">Back to monitor</a> | Refreshes every 10 seconds. Structured application events only.</div>
+<h1>Activity Logs</h1><div class="muted"><a href="/sunpark/">Back to monitor</a> | Refreshes every 10 seconds.</div>
+<div class="filters">
+<label>Time range<select id="f-time"><option value="">All</option><option value="1">Last 1h</option><option value="6">Last 6h</option><option value="24" selected>Last 24h</option><option value="168">Last 7d</option></select></label>
+<label>Level<select id="f-level"><option value="">All</option><option value="info">info</option><option value="warn">warn</option><option value="error">error</option></select></label>
+<label>Source<select id="f-source"><option value="">All</option><option value="stream">stream</option><option value="worker">worker</option><option value="exits">exits</option><option value="metadata">metadata</option><option value="safety">safety</option><option value="holders">holders</option><option value="webhook">webhook</option></select></label>
+<label>Search<input id="f-q" type="text" placeholder="message or details..." style="min-width:200px"></label>
+<button onclick="refresh()">Filter</button>
+</div>
 <table><thead><tr><th>Time</th><th>Level</th><th>Source</th><th>Message</th><th>Details</th></tr></thead>
 <tbody id="logs"><tr><td colspan="5">Loading...</td></tr></tbody></table>
 <script>
 const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
-async function refresh(){const r=await fetch('/sunpark/api/logs?limit=150');if(!r.ok)throw Error(r.status);const rows=await r.json();document.querySelector('#logs').innerHTML=rows.map(x=>`<tr><td>${esc(x.created_at)}</td><td class="${esc(x.level)}">${esc(x.level)}</td><td>${esc(x.source)}</td><td>${esc(x.message)}</td><td><code>${esc(x.meta||'')}</code></td></tr>`).join('')||'<tr><td colspan="5">No activity yet</td></tr>'}
+function buildUrl(){const p=new URLSearchParams();const h=document.getElementById('f-time').value;if(h){const d=new Date(Date.now()-h*3600000).toISOString();p.set('since',d)}const lv=document.getElementById('f-level').value;if(lv)p.set('level',lv);const src=document.getElementById('f-source').value;if(src)p.set('source',src);const q=document.getElementById('f-q').value.trim();if(q)p.set('q',q);p.set('limit','300');return '/sunpark/api/logs?'+p.toString()}
+async function refresh(){const r=await fetch(buildUrl());if(!r.ok)throw Error(r.status);const rows=await r.json();document.querySelector('#logs').innerHTML=rows.map(x=>`<tr><td>${esc(x.created_at)}</td><td class="${esc(x.level)}">${esc(x.level)}</td><td>${esc(x.source)}</td><td>${esc(x.message)}</td><td><code>${esc(x.meta||'')}</code></td></tr>`).join('')||'<tr><td colspan="5">No matching logs</td></tr>'}
+document.getElementById('f-q').addEventListener('keydown',e=>{if(e.key==='Enter')refresh()});
 refresh().catch(e=>document.querySelector('#logs').innerHTML=`<tr><td colspan="5">${esc(e.message)}</td></tr>`);setInterval(()=>refresh().catch(()=>{}),10000);
 </script></main></body></html>"""
 
@@ -511,7 +525,7 @@ def edge_payload():
         return {}
 
 
-def logs_payload(limit=150, level=None, source=None):
+def logs_payload(limit=150, level=None, source=None, since=None, q=None):
     try:
         limit = max(1, min(int(limit), 300))
     except (TypeError, ValueError):
@@ -525,6 +539,13 @@ def logs_payload(limit=150, level=None, source=None):
     if source:
         clauses.append("source = ?")
         values.append(source[:40])
+    if since:
+        clauses.append("created_at >= ?")
+        values.append(since)
+    if q:
+        like = f"%{q}%"
+        clauses.append("(message LIKE ? OR meta_json LIKE ?)")
+        values.extend([like, like])
     if clauses:
         query += " WHERE " + " AND ".join(clauses)
     query += " ORDER BY id DESC LIMIT ?"

@@ -173,6 +173,8 @@ def activity_logs_api():
             request.args.get("limit", 150),
             request.args.get("level"),
             request.args.get("source"),
+            request.args.get("since"),
+            request.args.get("q"),
         )
     )
 

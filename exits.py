@@ -23,6 +23,7 @@ from datetime import datetime, timezone
 
 from intel import dev_sell, distribution_pressure
 from storage import (
+    append_activity,
     get_token_registry,
     load_paper_positions,
     load_paper_state,
@@ -196,6 +197,10 @@ class PaperAccount:
     def halt_trading(self, now=None):
         info = self.breakers(now)
         if info["daily_halt"] or info["weekly_halt"]:
+            append_activity(
+                "warn", "exits", "circuit breaker tripped",
+                {"daily_pct": info["daily_loss_pct"], "weekly_pct": info["weekly_loss_pct"], "daily_halt": info["daily_halt"], "weekly_halt": info["weekly_halt"], "open": len(self.positions)},
+            )
             return info
         return None
 
@@ -218,6 +223,10 @@ class PaperAccount:
             self.balance_sol -= size
             self._record(mint, "open", entry_price_sol, size, 0.0, entry_reason, entry_source=entry_source)
             self._save_balance()
+            append_activity(
+                "info", "exits", "paper entry opened",
+                {"mint": mint[:16], "price": round(entry_price_sol, 10), "size": round(size, 4), "reason": entry_reason, "source": entry_source, "balance": round(self.balance_sol, 4)},
+            )
             try:
                 save_paper_position(position.to_row())
             except Exception:
@@ -241,6 +250,11 @@ class PaperAccount:
         self.balance_sol += value
         self._record(position.mint, "close", fill_price, value, pnl, reason, entry_source=getattr(position, "entry_source", "rollup"))
         self._save_balance()
+        level = "warn" if reason in ("stop_loss", "circuit_breaker", "dead_capital", "dev_sell") else "info"
+        append_activity(
+            level, "exits", f"paper closed: {reason}",
+            {"mint": position.mint[:16], "reason": reason, "entry": round(position.entry_price_sol, 10), "exit": round(fill_price, 10), "pnl_sol": round(pnl, 4), "pnl_pct": round((fill_price / position.entry_price_sol - 1) * 100, 2) if position.entry_price_sol else 0, "size": round(position.size_sol, 4), "balance": round(self.balance_sol, 4)},
+        )
         self.closed.append(
             {
                 "mint": position.mint,
@@ -271,6 +285,10 @@ class PaperAccount:
         pnl = value - original_size * share
         self._record(position.mint, action, fill_price, value, pnl, action, entry_source=getattr(position, "entry_source", "rollup"))
         self._save_balance()
+        append_activity(
+            "info", "exits", f"paper {action}",
+            {"mint": position.mint[:16], "action": action, "share": round(share * 100), "fill": round(fill_price, 10), "pnl_sol": round(pnl, 4), "remaining": round(position.size_sol, 4), "balance": round(self.balance_sol, 4)},
+        )
         try:
             save_paper_position(position.to_row())
         except Exception:

@@ -6,7 +6,7 @@ import struct
 import requests
 from dotenv import load_dotenv
 
-from storage import get_token_meta, save_token_meta
+from storage import append_activity, get_token_meta, save_token_meta
 
 load_dotenv()
 
@@ -129,6 +129,7 @@ def resolve_token_metadata(mint):
     result = {"mint": mint, "status": "missing"}
     save_token_meta(result)
     memory_cache[mint] = result
+    append_activity("warn", "metadata", "RPC failed for mint", {"mint": mint[:16]})
     return result
 
 

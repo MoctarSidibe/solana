@@ -15,7 +15,7 @@ import requests
 from dotenv import load_dotenv
 
 from metadata import base58_decode, base58_encode, is_on_curve, RPC_URLS
-from storage import get_token_safety, save_token_safety
+from storage import append_activity, get_token_safety, save_token_safety
 
 load_dotenv()
 
@@ -81,6 +81,7 @@ def resolve_token_safety(mint):
     saved = {"mint": mint, "status": "missing"}
     save_token_safety(saved)
     memory_cache[mint] = saved
+    append_activity("warn", "safety", "RPC failed for mint", {"mint": mint[:16]})
     return saved
 
 

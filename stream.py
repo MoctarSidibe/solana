@@ -64,6 +64,12 @@ stats_lock = threading.Lock()
 _notification_queue = queue.Queue(maxsize=500)
 
 
+def _redact_url(url):
+    if "api-key=" in url:
+        return url.split("api-key=")[0] + "api-key=***"
+    return url
+
+
 def claim_signature(signature):
     with seen_lock:
         if signature in seen_signatures:
@@ -359,7 +365,7 @@ def listen(wss_url, program_name):
                 "info",
                 "stream",
                 "subscription connected",
-                {"program": program_name, "endpoint": wss_url},
+                {"program": program_name, "endpoint": _redact_url(wss_url)},
             )
             backoff = 1
             socket.settimeout(25)
@@ -380,7 +386,7 @@ def listen(wss_url, program_name):
                 "warn",
                 "stream",
                 "subscription disconnected",
-                {"program": program_name, "endpoint": wss_url, "error": str(error)[:300]},
+                {"program": program_name, "endpoint": _redact_url(wss_url), "error": str(error)[:300]},
             )
             time.sleep(backoff)
             backoff = min(backoff * 2, 60)

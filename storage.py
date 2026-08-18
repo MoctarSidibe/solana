@@ -924,6 +924,19 @@ def prune_old_candidates(keep_hours=24, keep_recent=500):
         connection.close()
 
 
+def _safe_meta_json(meta):
+    if meta is None:
+        return None
+    s = json.dumps(meta)
+    if len(s) <= 1000:
+        return s
+    trimmed = {}
+    for k, v in meta.items():
+        sv = str(v)
+        trimmed[k] = sv[:200] if len(sv) > 200 else sv
+    return json.dumps(trimmed)[:1000]
+
+
 def append_activity(level, source, message, meta=None):
     connection = get_db()
     try:
@@ -935,7 +948,7 @@ def append_activity(level, source, message, meta=None):
                 level[:20],
                 source[:40],
                 str(message)[:500],
-                json.dumps(meta)[:1000] if meta is not None else None,
+                _safe_meta_json(meta),
             ),
         )
         connection.execute(
