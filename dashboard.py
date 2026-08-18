@@ -75,23 +75,23 @@ code{color:#a9d6ff} .signal-BUY{color:#53d69a}.signal-SELL{color:#ff9f7e}.signal
 </style>
 </head>
 <body><main>
-<h1><svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="#f4c95d" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:middle;margin-right:6px"><circle cx="12" cy="12" r="5"/><line x1="12" y1="1" x2="12" y2="3"/><line x1="12" y1="21" x2="12" y2="23"/><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"/><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"/><line x1="1" y1="12" x2="3" y2="12"/><line x1="21" y1="12" x2="23" y2="12"/><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"/><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"/></svg>SunPark Monitor</h1><div class="muted"><a href="/sunpark/logs">Activity logs</a> | Rules vs DeepSeek paper-trading pipeline. Refreshes every 10 seconds.</div>
+<h1><svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="#f4c95d" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:middle;margin-right:6px"><circle cx="12" cy="12" r="5"/><line x1="12" y1="1" x2="12" y2="3"/><line x1="12" y1="21" x2="12" y2="23"/><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"/><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"/><line x1="1" y1="12" x2="3" y2="12"/><line x1="21" y1="12" x2="23" y2="12"/><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"/><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"/></svg>SunPark Monitor</h1><div class="muted"><a href="/sunpark/logs">Activity logs</a> | Paper-trading pipeline. Refreshes every 10 seconds.</div>
  <section class="grid" id="cards"></section>
  <h2>Paper Account (dry-run)</h2>
-  <div class="muted">Virtual PnL from the mechanical exit engine. Honest PnL excludes wash trades and applies 30% slippage + fees.</div>
+  <div class="muted">Paper PnL. Honest excludes wash trades, applies 30% slippage + fees.</div>
   <section class="grid" id="paperCards"></section>
-   <table><thead><tr><th>Open</th><th>Closed</th><th>Wins</th><th>Position</th><th>State</th><th>Entry</th><th>Peak</th></tr></thead>
-   <tbody id="paper"><tr><td colspan="7">Loading...</td></tr></tbody></table>
+   <table><thead><tr><th>Position</th><th>State</th><th>Entry</th><th>Peak</th></tr></thead>
+   <tbody id="paper"><tr><td colspan="4">Loading...</td></tr></tbody></table>
  <h2>Live Picks (Top-10)</h2>
- <div class="muted">Mechanical rank of gate-clean mints; DeepSeek is a last-pass sanity check.</div>
+ <div class="muted">Gate-clean mints ranked by momentum score.</div>
  <table><thead><tr><th>#</th><th>Token</th><th>Score</th><th>Why</th><th>AI verdict</th><th>AI reason</th></tr></thead>
  <tbody id="picks"><tr><td colspan="6">Loading...</td></tr></tbody></table>
 
   <h2>RPC Enrichment Health</h2>
-  <div class="muted">Background RPC caches (holders, mint/freeze safety, metadata, price coverage). Green = that cache is live; amber = partially working; red = RPC-limited (e.g. free tier exhausted) and self-healing once a working RPC is available.</div>
+  <div class="muted">Background RPC caches. Green = live, red = rate-limited (self-heals).</div>
   <section class="grid" id="enrich"></section>
   <h2>Edge (forward outcomes)</h2>
-  <div class="muted">Forward +5m/+30m returns labeled at maturity from live prices; win rate = % of resolved with +30m return. No hindsight, no guessing.</div>
+  <div class="muted">Forward +5m/+30m returns from live prices. No hindsight.</div>
   <section class="grid" id="edgeCards"></section>
    <h3>By entry mode</h3>
    <table><thead><tr><th>Mode</th><th>Samples</th><th>Resolved</th><th>Win %</th><th>Avg +30m</th><th>Median +30m</th></tr></thead><tbody id="edge-mode"><tr><td colspan="6">Loading...</td></tr></tbody></table>
@@ -111,8 +111,7 @@ async function refresh(){
  document.querySelector('#cards').innerHTML=[
    card('Webhook',services.webhook?'ONLINE':'CHECK',services.webhook?'ok':'warn'),
    card('Stream',services.stream?'ONLINE':'STALE',services.stream?'ok':'bad'),
-   card('Pending queue',d.pending), card('RPC failures',stream.rpc_failures||0,stream.rpc_failures?'warn':'ok'),
-   card('AI avg latency',`${Math.round(d.ai_avg_latency_ms||0)} ms`), card('AI errors',d.ai_errors, d.ai_errors?'warn':'ok')].join('');
+   card('Pending queue',d.pending), card('RPC failures',stream.rpc_failures||0,stream.rpc_failures?'warn':'ok')].join('');
    document.querySelector('#reject').innerHTML=(d.rejection?Object.entries(d.rejection).slice(0,12).map(([k,v])=>`<tr><td>${esc(k)}</td><td>${esc(v)}</td></tr>`).join(''):'')||'<tr><td colspan="2">No rejections yet</td></tr>';
   const g=await fetch('/sunpark/api/enrichment');const en=await g.json();
   document.querySelector('#enrich').innerHTML=Object.entries(en||{}).map(([k,v])=>card(k,`${v.ok}/${v.total}`,v.status==='ok'?'ok':(v.status==='degraded'?'warn':'bad'))).join('')||card('RPC enrichment','unavailable','bad');
@@ -124,16 +123,19 @@ async function refresh(){
     document.querySelector('#paperCards').innerHTML=paper.open_positions!==undefined?[
      card('Honest Balance',paper.honest_balance_sol+' SOL'+(solUsd?' ($'+$(paper.honest_balance_sol)+')':''),(paper.honest_balance_sol>10?'ok':'warn')),
      card('Honest PnL',paper.honest_pnl_sol+' SOL'+(solUsd?' ($'+$(paper.honest_pnl_sol)+')':''),(paper.honest_pnl_sol>0?'ok':'bad')),
-     card('Win rate',paper.honest_closed_count?Math.round(paper.honest_win_count/paper.honest_closed_count*100)+'%':'-',paper.honest_win_count>paper.honest_closed_count/2?'ok':'warn')
+     card('Win rate',paper.honest_closed_count?Math.round(paper.honest_win_count/paper.honest_closed_count*100)+'%':'-',paper.honest_win_count>paper.honest_closed_count/2?'ok':'warn'),
+     card('Open',paper.open_positions||0,paper.open_positions>5?'warn':''),
+     card('Closed',paper.honest_closed_count||paper.closed_count||0),
+     card('Wins',paper.honest_win_count||paper.win_count||0,(paper.honest_win_count||0)>0?'ok':'')
     ].join(''):'';
-    document.querySelector('#paper').innerHTML=(paper.open_positions!==undefined?`<tr><td>${esc(paper.open_positions)}</td><td>${esc(paper.honest_closed_count||paper.closed_count)}</td><td>${esc(paper.honest_win_count||paper.win_count)}</td><td colspan="4"></td></tr>`+(paper.positions||[]).map(x=>`<tr><td colspan="3"></td><td><code>${esc((x.mint||'').slice(0,10))}...</code></td><td>${esc(x.state)}</td><td>${esc(x.entry_price_sol)}</td><td>${esc(x.peak_price_sol)}</td></tr>`).join(''):'<tr><td colspan="7">No paper trades yet</td></tr>');
+    document.querySelector('#paper').innerHTML=(paper.positions&&paper.positions.length?(paper.positions||[]).map(x=>`<tr><td><code>${esc((x.mint||'').slice(0,10))}...</code></td><td>${esc(x.state)}</td><td>${esc(x.entry_price_sol)}</td><td>${esc(x.peak_price_sol)}</td></tr>`).join(''):'<tr><td colspan="4">No open positions</td></tr>'):'<tr><td colspan="4">No paper trades yet</td></tr>');
   const e=await fetch('/sunpark/api/edge');const edge=await e.json();
   const s=edge.summary||{};
   document.querySelector('#edgeCards').innerHTML=[
    card('Outcome samples',s.samples||0), card('Resolved',s.resolved||0),
    card('Win rate (30m)',s.win_rate_pct==null?'-':s.win_rate_pct+'%',s.win_rate_pct>50?'ok':(s.win_rate_pct==null?'':'warn')),
    card('Avg +30m',s.avg_return_30m_pct==null?'-':s.avg_return_30m_pct+'%',(s.avg_return_30m_pct||0)>0?'ok':'warn'),
-   card('Median +30m',s.median_return_30m_pct==null?'-':s.median_return_30m_pct+'%'), card('No data',s.nodata||0)].join('');
+   card('Median +30m',s.median_return_30m_pct==null?'-':s.median_return_30m_pct+'%')].join('');
   function groupRows(obj){return Object.entries(obj||{}).map(([k,v])=>`<tr><td>${esc(k)}</td><td>${esc(v.samples??0)}</td><td>${esc(v.resolved??0)}</td><td>${v.win_rate_pct==null?'-':esc(v.win_rate_pct+'%')}</td><td>${v.avg_return_30m_pct==null?'-':esc(v.avg_return_30m_pct+'%')}</td><td>${v.median_return_30m_pct==null?'-':esc(v.median_return_30m_pct+'%')}</td></tr>`).join('')}
   ['mode','exit'].forEach(k=>document.querySelector('#edge-'+k).innerHTML=groupRows(edge['by_'+k])||'<tr><td colspan="6">No outcomes yet</td></tr>');
 }
