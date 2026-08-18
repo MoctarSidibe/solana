@@ -80,16 +80,13 @@ code{color:#a9d6ff} .signal-BUY{color:#53d69a}.signal-SELL{color:#ff9f7e}.signal
  <h2>Paper Account (dry-run)</h2>
   <div class="muted">Virtual PnL from the mechanical exit engine. Honest PnL excludes wash trades and applies 30% slippage + fees.</div>
   <section class="grid" id="paperCards"></section>
-   <table><thead><tr><th>Honest</th><th>Open</th><th>Closed</th><th>Wins</th><th>Honest PnL</th><th>Position</th><th>State</th><th>Entry</th><th>Peak</th></tr></thead>
-   <tbody id="paper"><tr><td colspan="9">Loading...</td></tr></tbody></table>
+   <table><thead><tr><th>Open</th><th>Closed</th><th>Wins</th><th>Position</th><th>State</th><th>Entry</th><th>Peak</th></tr></thead>
+   <tbody id="paper"><tr><td colspan="7">Loading...</td></tr></tbody></table>
  <h2>Live Picks (Top-10)</h2>
  <div class="muted">Mechanical rank of gate-clean mints; DeepSeek is a last-pass sanity check.</div>
  <table><thead><tr><th>#</th><th>Token</th><th>Score</th><th>Why</th><th>AI verdict</th><th>AI reason</th></tr></thead>
  <tbody id="picks"><tr><td colspan="6">Loading...</td></tr></tbody></table>
- <h2>Live Flow</h2>
- <div class="muted">Top mints by 5-minute SOL volume, rolled from the stream in-memory.</div>
- <table><thead><tr><th>Token</th><th>5m VOL (SOL)</th><th>Buy:Sell</th><th>Net (SOL)</th><th>Buyers</th><th>Sellers</th><th>Age</th></tr></thead>
-  <tbody id="flow"><tr><td colspan="7">Loading...</td></tr></tbody></table>
+
   <h2>RPC Enrichment Health</h2>
   <div class="muted">Background RPC caches (holders, mint/freeze safety, metadata, price coverage). Green = that cache is live; amber = partially working; red = RPC-limited (e.g. free tier exhausted) and self-healing once a working RPC is available.</div>
   <section class="grid" id="enrich"></section>
@@ -103,9 +100,7 @@ code{color:#a9d6ff} .signal-BUY{color:#53d69a}.signal-SELL{color:#ff9f7e}.signal
    <h2>Why Tokens Get Rejected (24h)</h2>
  <table><thead><tr><th>Reason</th><th>Count</th></tr></thead>
  <tbody id="reject"><tr><td colspan="2">Loading...</td></tr></tbody></table>
- <h2>Recent Candidates</h2>
- <table><thead><tr><th>Time</th><th>Token</th><th>Category</th><th>Flags</th><th>Signature</th><th>Rules</th><th>AI</th><th>Latency</th></tr></thead>
- <tbody id="recent"><tr><td colspan="8">Loading...</td></tr></tbody></table>
+
 </main>
 <script>
 const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
@@ -118,10 +113,7 @@ async function refresh(){
    card('Stream',services.stream?'ONLINE':'STALE',services.stream?'ok':'bad'),
    card('Pending queue',d.pending), card('RPC failures',stream.rpc_failures||0,stream.rpc_failures?'warn':'ok'),
    card('AI avg latency',`${Math.round(d.ai_avg_latency_ms||0)} ms`), card('AI errors',d.ai_errors, d.ai_errors?'warn':'ok')].join('');
-  document.querySelector('#recent').innerHTML=d.recent.map(x=>`<tr><td>${esc(x.received_at)}</td><td><strong>${esc(x.symbol||x.name||'Unknown')}</strong><br><code>${esc((x.primary_mint||'').slice(0,10))}...</code></td><td>${esc(x.category)}</td><td>${esc(x.flags||'')}</td><td><code>${esc(x.signature.slice(0,12))}...</code></td><td class="signal-${esc(x.rules_signal)}">${esc(x.rules_signal)}</td><td class="signal-${esc(x.ai_signal)}">${esc(x.ai_signal)}</td><td>${esc(x.ai_latency_ms??'-')} ms</td></tr>`).join('')||'<tr><td colspan="8">No candidates yet</td></tr>';
-  document.querySelector('#reject').innerHTML=(d.rejection?Object.entries(d.rejection).slice(0,12).map(([k,v])=>`<tr><td>${esc(k)}</td><td>${esc(v)}</td></tr>`).join(''):'')||'<tr><td colspan="2">No rejections yet</td></tr>';
-  const f=await fetch('/sunpark/api/top_mints');const flow=await f.json();
-  document.querySelector('#flow').innerHTML=flow.map(x=>`<tr><td><strong>${esc(x.symbol||x.name||'Unknown')}</strong><br><code>${esc((x.mint||'').slice(0,10))}...</code></td><td>${esc(x.vol_5m_sol??0)}</td><td>${esc(x.buy_ratio_5m??'-')}</td><td>${esc(x.net_5m_sol??0)}</td><td>${esc(x.unique_buyers_5m??0)}</td><td>${esc(x.unique_sellers_5m??0)}</td><td>${esc(x.age_minutes??0)}m</td></tr>`).join('')||'<tr><td colspan="7">No flow yet</td></tr>';
+   document.querySelector('#reject').innerHTML=(d.rejection?Object.entries(d.rejection).slice(0,12).map(([k,v])=>`<tr><td>${esc(k)}</td><td>${esc(v)}</td></tr>`).join(''):'')||'<tr><td colspan="2">No rejections yet</td></tr>';
   const g=await fetch('/sunpark/api/enrichment');const en=await g.json();
   document.querySelector('#enrich').innerHTML=Object.entries(en||{}).map(([k,v])=>card(k,`${v.ok}/${v.total}`,v.status==='ok'?'ok':(v.status==='degraded'?'warn':'bad'))).join('')||card('RPC enrichment','unavailable','bad');
   document.querySelector('#picks').innerHTML=(d.picks||[]).map(x=>`<tr><td>${esc(x.rank)}</td><td><strong>${esc(x.symbol||x.name||'Unknown')}</strong><br><code>${esc((x.mint||'').slice(0,10))}...</code></td><td>${esc(x.score)}</td><td>${esc((x.reasons||[]).join(', '))}</td><td class="signal-${esc(x.ai_signal||'IGNORE')}">${esc(x.ai_signal||'…')}${x.ai_confidence?' ('+esc(x.ai_confidence)+')':''}</td><td>${esc(x.ai_reason||'')}</td></tr>`).join('')||'<tr><td colspan="6">No picks yet</td></tr>';
@@ -134,7 +126,7 @@ async function refresh(){
      card('Honest PnL',paper.honest_pnl_sol+' SOL'+(solUsd?' ($'+$(paper.honest_pnl_sol)+')':''),(paper.honest_pnl_sol>0?'ok':'bad')),
      card('Win rate',paper.honest_closed_count?Math.round(paper.honest_win_count/paper.honest_closed_count*100)+'%':'-',paper.honest_win_count>paper.honest_closed_count/2?'ok':'warn')
     ].join(''):'';
-    document.querySelector('#paper').innerHTML=(paper.open_positions!==undefined?`<tr><td class="${paper.honest_balance_sol>10?'ok':'warn'}"><strong>${esc(paper.honest_balance_sol)}</strong>${solUsd?' <span class="muted">($'+$(paper.honest_balance_sol)+')</span>':''}</td><td>${esc(paper.open_positions)}</td><td>${esc(paper.honest_closed_count||paper.closed_count)}</td><td>${esc(paper.honest_win_count||paper.win_count)}</td><td class="${paper.honest_pnl_sol>0?'ok':'bad'}">${esc(paper.honest_pnl_sol)}${solUsd?' <span class="muted">($'+$(paper.honest_pnl_sol)+')</span>':''}</td><td colspan="4"></td></tr>`+(paper.positions||[]).map(x=>`<tr><td colspan="5"></td><td><code>${esc((x.mint||'').slice(0,10))}...</code></td><td>${esc(x.state)}</td><td>${esc(x.entry_price_sol)}</td><td>${esc(x.peak_price_sol)}</td></tr>`).join(''):'<tr><td colspan="9">No paper trades yet</td></tr>');
+    document.querySelector('#paper').innerHTML=(paper.open_positions!==undefined?`<tr><td>${esc(paper.open_positions)}</td><td>${esc(paper.honest_closed_count||paper.closed_count)}</td><td>${esc(paper.honest_win_count||paper.win_count)}</td><td colspan="4"></td></tr>`+(paper.positions||[]).map(x=>`<tr><td colspan="3"></td><td><code>${esc((x.mint||'').slice(0,10))}...</code></td><td>${esc(x.state)}</td><td>${esc(x.entry_price_sol)}</td><td>${esc(x.peak_price_sol)}</td></tr>`).join(''):'<tr><td colspan="7">No paper trades yet</td></tr>');
   const e=await fetch('/sunpark/api/edge');const edge=await e.json();
   const s=edge.summary||{};
   document.querySelector('#edgeCards').innerHTML=[
